@@ -1,0 +1,8 @@
+[alphavantage]
+api_key = "your_api_key_here"
+
+# Max API requests per minute (defaults to 75 when omitted)
+rate_limit_per_minute = 75
+
+# Optionally override the API base URL (e.g. for a proxy)
+# base_url = "https://www.alphavantage.co/query"
