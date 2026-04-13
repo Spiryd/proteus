@@ -5,6 +5,8 @@ use std::path::Path;
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub alphavantage: AlphaVantageConfig,
+    pub cache: CacheConfig,
+    pub ingest: Option<IngestConfig>,
 }
 
 /// `[alphavantage]` section of `config.toml`.
@@ -16,6 +18,32 @@ pub struct AlphaVantageConfig {
     pub base_url: Option<String>,
     /// Max API requests per minute. Defaults to 75 when omitted.
     pub rate_limit_per_minute: Option<u32>,
+}
+
+/// `[cache]` section of `config.toml`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct CacheConfig {
+    /// Path to the DuckDB file. Defaults to `"data/commodities.duckdb"`.
+    pub path: Option<String>,
+}
+
+impl CacheConfig {
+    pub fn resolved_path(&self) -> &str {
+        self.path.as_deref().unwrap_or("data/commodities.duckdb")
+    }
+}
+
+/// `[ingest]` section: list of commodity series to fetch automatically.
+#[derive(Debug, Deserialize)]
+pub struct IngestConfig {
+    pub series: Vec<IngestSeriesItem>,
+}
+
+/// A single `{ commodity, interval }` entry under `[ingest]`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct IngestSeriesItem {
+    pub commodity: String,
+    pub interval: String,
 }
 
 impl Config {

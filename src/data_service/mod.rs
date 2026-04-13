@@ -1,0 +1,130 @@
+use std::sync::Arc;
+
+use crate::alphavantage::client::AlphaVantageClient;
+use crate::alphavantage::commodity::{CommodityEndpoint, CommodityResponse, Interval};
+use crate::cache::{CommodityCache, SeriesStatus};
+use crate::config::{Config, IngestSeriesItem};
+
+pub struct DataService {
+    client: AlphaVantageClient,
+    cache: Arc<CommodityCache>,
+}
+
+impl DataService {
+    pub fn new(config: &Config) -> anyhow::Result<Self> {
+        let client = AlphaVantageClient::from_config(config);
+        let cache = CommodityCache::open(config.cache.resolved_path())?;
+        Ok(Self {
+            client,
+            cache: Arc::new(cache),
+        })
+    }
+
+    /// Return data for a series, using the cache when it is fresh.
+    /// Only calls the API when data is missing or stale.
+    #[allow(dead_code)]
+    pub async fn get(
+        &self,
+        endpoint: &CommodityEndpoint,
+        interval: Interval,
+    ) -> anyhow::Result<CommodityResponse> {
+        let symbol = endpoint.cache_key().to_string();
+        let interval_str = interval.as_str().to_string();
+        let cache = Arc::clone(&self.cache);
+
+        let cached = tokio::task::spawn_blocking(move || cache.load(&symbol, &interval_str))
+            .await??;
+
+        if let Some(response) = cached {
+            return Ok(response);
+        }
+
+        // Cache miss or stale — fetch from API.
+        let response = self.client.commodity_history(endpoint, interval).await?;
+        self.write_cache(endpoint, interval, response.clone()).await?;
+        Ok(response)
+    }
+
+    /// Force-fetch from the API regardless of cache state.
+    pub async fn refresh(
+        &self,
+        endpoint: &CommodityEndpoint,
+        interval: Interval,
+    ) -> anyhow::Result<CommodityResponse> {
+        let response = self.client.commodity_history(endpoint, interval).await?;
+        self.write_cache(endpoint, interval, response.clone()).await?;
+        Ok(response)
+    }
+
+    /// Read-only cache lookup — never calls the API.
+    pub async fn load_cached(
+        &self,
+        endpoint: &CommodityEndpoint,
+        interval: Interval,
+    ) -> anyhow::Result<Option<CommodityResponse>> {
+        let symbol = endpoint.cache_key().to_string();
+        let interval_str = interval.as_str().to_string();
+        let cache = Arc::clone(&self.cache);
+        tokio::task::spawn_blocking(move || cache.load(&symbol, &interval_str)).await?
+    }
+
+    /// Ingest all series listed in `[ingest]`, skipping fresh ones unless `force = true`.
+    pub async fn ingest_all(
+        &self,
+        series: &[IngestSeriesItem],
+        force: bool,
+    ) -> anyhow::Result<()> {
+        for item in series {
+            let endpoint: CommodityEndpoint = item.commodity.parse()?;
+            let interval: Interval = item.interval.parse()?;
+            let symbol = endpoint.cache_key().to_string();
+            let interval_str = interval.as_str().to_string();
+
+            if !force {
+                let cache = Arc::clone(&self.cache);
+                let sym = symbol.clone();
+                let iv = interval_str.clone();
+                let cached = tokio::task::spawn_blocking(move || cache.last_fetched(&sym, &iv))
+                    .await??;
+
+                if cached.is_some() {
+                    println!("[skip]  {} ({}) — already cached", symbol, interval_str);
+                    continue;
+                }
+            }
+
+            println!("[fetch] {} ({}) ...", symbol, interval_str);
+            match self.client.commodity_history(&endpoint, interval).await {
+                Ok(response) => {
+                    let count = response.data.len();
+                    self.write_cache(&endpoint, interval, response).await?;
+                    println!("[ok]    {} ({}) — {} data points stored", symbol, interval_str, count);
+                }
+                Err(e) => {
+                    eprintln!("[error] {} ({}): {e}", symbol, interval_str);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Return cache status for all stored series.
+    pub async fn status(&self) -> anyhow::Result<Vec<SeriesStatus>> {
+        let cache = Arc::clone(&self.cache);
+        tokio::task::spawn_blocking(move || cache.status()).await?
+    }
+
+    async fn write_cache(
+        &self,
+        endpoint: &CommodityEndpoint,
+        interval: Interval,
+        response: CommodityResponse,
+    ) -> anyhow::Result<()> {
+        let symbol = endpoint.cache_key().to_string();
+        let interval_str = interval.as_str().to_string();
+        let cache = Arc::clone(&self.cache);
+        tokio::task::spawn_blocking(move || cache.store(&symbol, &interval_str, &response))
+            .await??;
+        Ok(())
+    }
+}
