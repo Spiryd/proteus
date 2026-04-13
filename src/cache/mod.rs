@@ -25,11 +25,10 @@ unsafe impl Sync for CommodityCache {}
 
 impl CommodityCache {
     pub fn open(path: &str) -> anyhow::Result<Self> {
-        if let Some(parent) = std::path::Path::new(path).parent() {
-            if !parent.as_os_str().is_empty() {
+        if let Some(parent) = std::path::Path::new(path).parent()
+            && !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)?;
             }
-        }
         let conn = duckdb::Connection::open(path)
             .map_err(|e| anyhow::anyhow!("Failed to open DuckDB at '{path}': {e}"))?;
         let cache = Self { conn: Mutex::new(conn) };

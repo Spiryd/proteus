@@ -232,8 +232,8 @@ async fn cmd_status(service: &DataService) -> anyhow::Result<()> {
     }
 
     println!(
-        "\n{:<20} {:<10} {:<30} {:<8} {:<12} {:<12} {}",
-        "Symbol", "Interval", "Name", "Points", "From", "To", "Last Fetched"
+        "\n{:<20} {:<10} {:<30} {:<8} {:<12} {:<12} Last Fetched",
+        "Symbol", "Interval", "Name", "Points", "From", "To"
     );
     println!("{:-<112}", "");
     for s in &statuses {
