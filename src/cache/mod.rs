@@ -26,12 +26,15 @@ unsafe impl Sync for CommodityCache {}
 impl CommodityCache {
     pub fn open(path: &str) -> anyhow::Result<Self> {
         if let Some(parent) = std::path::Path::new(path).parent()
-            && !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
         let conn = duckdb::Connection::open(path)
             .map_err(|e| anyhow::anyhow!("Failed to open DuckDB at '{path}': {e}"))?;
-        let cache = Self { conn: Mutex::new(conn) };
+        let cache = Self {
+            conn: Mutex::new(conn),
+        };
         cache.init_schema()?;
         Ok(cache)
     }
@@ -40,9 +43,8 @@ impl CommodityCache {
         let conn = self.conn.lock().unwrap();
         // Migrate existing databases: upgrade date column from DATE to TIMESTAMP.
         // Ignored if table doesn't exist yet or column is already TIMESTAMP.
-        let _ = conn.execute_batch(
-            "ALTER TABLE commodity_prices ALTER COLUMN date TYPE TIMESTAMP;",
-        );
+        let _ =
+            conn.execute_batch("ALTER TABLE commodity_prices ALTER COLUMN date TYPE TIMESTAMP;");
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS commodity_meta (
                 symbol   VARCHAR NOT NULL,
@@ -84,11 +86,7 @@ impl CommodityCache {
     }
 
     /// Load a cached series. Returns `None` if no data is stored.
-    pub fn load(
-        &self,
-        symbol: &str,
-        interval: &str,
-    ) -> anyhow::Result<Option<CommodityResponse>> {
+    pub fn load(&self, symbol: &str, interval: &str) -> anyhow::Result<Option<CommodityResponse>> {
         let conn = self.conn.lock().unwrap();
 
         let meta: Option<(String, String)> = conn
@@ -114,7 +112,10 @@ impl CommodityCache {
 
         let points: Vec<CommodityDataPoint> = stmt
             .query_map(duckdb::params![symbol, interval], |row| {
-                Ok(CommodityDataPoint { date: row.get(0)?, value: row.get(1)? })
+                Ok(CommodityDataPoint {
+                    date: row.get(0)?,
+                    value: row.get(1)?,
+                })
             })
             .map_err(|e| anyhow::anyhow!("Data load failed: {e}"))?
             .collect::<Result<_, _>>()
@@ -185,13 +186,21 @@ impl CommodityCache {
             ])
             .map_err(|e| anyhow::anyhow!("Insert point failed: {e}"))?;
         }
-        println!("  [db] insert {} rows: {:.3}s", response.data.len(), t.elapsed().as_secs_f32());
+        println!(
+            "  [db] insert {} rows: {:.3}s",
+            response.data.len(),
+            t.elapsed().as_secs_f32()
+        );
 
         let t = std::time::Instant::now();
         conn.execute_batch("COMMIT")
             .map_err(|e| anyhow::anyhow!("COMMIT failed: {e}"))?;
         println!("  [db] commit:       {:.3}s", t.elapsed().as_secs_f32());
-        println!("  [db] total store:  {:.3}s  ({} points)", total_start.elapsed().as_secs_f32(), response.data.len());
+        println!(
+            "  [db] total store:  {:.3}s  ({} points)",
+            total_start.elapsed().as_secs_f32(),
+            response.data.len()
+        );
 
         Ok(response.data.len())
     }

@@ -37,7 +37,13 @@ impl ModelParams {
     ) -> Self {
         let k = pi.len();
         let transition = transition_rows.into_iter().flatten().collect();
-        Self { k, pi, transition, means, variances }
+        Self {
+            k,
+            pi,
+            transition,
+            means,
+            variances,
+        }
     }
 
     /// Validate that all mathematical constraints are satisfied.
@@ -89,9 +95,7 @@ impl ModelParams {
             }
             let row_sum: f64 = self.transition[i * self.k..(i + 1) * self.k].iter().sum();
             if (row_sum - 1.0).abs() > PROB_TOL {
-                anyhow::bail!(
-                    "ModelParams: transition row {i} sums to {row_sum}, expected 1"
-                );
+                anyhow::bail!("ModelParams: transition row {i} sums to {row_sum}, expected 1");
             }
         }
 

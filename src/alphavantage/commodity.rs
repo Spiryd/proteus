@@ -42,7 +42,9 @@ impl CommodityEndpoint {
             Self::AllCommodities => "ALL_COMMODITIES",
             Self::Gold | Self::Silver => "GOLD_SILVER_HISTORY",
             // Equities use interval-specific function names; see equity_function_name().
-            Self::Spy | Self::Qqq => unreachable!("call equity_function_name() for equity endpoints"),
+            Self::Spy | Self::Qqq => {
+                unreachable!("call equity_function_name() for equity endpoints")
+            }
         }
     }
 
@@ -54,8 +56,8 @@ impl CommodityEndpoint {
             return None;
         }
         Some(match interval {
-            Interval::Daily   => "TIME_SERIES_DAILY_ADJUSTED",
-            Interval::Weekly  => "TIME_SERIES_WEEKLY_ADJUSTED",
+            Interval::Daily => "TIME_SERIES_DAILY_ADJUSTED",
+            Interval::Weekly => "TIME_SERIES_WEEKLY_ADJUSTED",
             Interval::Monthly => "TIME_SERIES_MONTHLY_ADJUSTED",
             _ => unreachable!("use TIME_SERIES_INTRADAY for intraday equity intervals"),
         })
@@ -171,16 +173,16 @@ pub enum Interval {
 impl Interval {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Daily          => "daily",
-            Self::Weekly         => "weekly",
-            Self::Monthly        => "monthly",
-            Self::Quarterly      => "quarterly",
-            Self::Annual         => "annual",
-            Self::Intraday1Min   => "1min",
-            Self::Intraday5Min   => "5min",
-            Self::Intraday15Min  => "15min",
-            Self::Intraday30Min  => "30min",
-            Self::Intraday60Min  => "60min",
+            Self::Daily => "daily",
+            Self::Weekly => "weekly",
+            Self::Monthly => "monthly",
+            Self::Quarterly => "quarterly",
+            Self::Annual => "annual",
+            Self::Intraday1Min => "1min",
+            Self::Intraday5Min => "5min",
+            Self::Intraday15Min => "15min",
+            Self::Intraday30Min => "30min",
+            Self::Intraday60Min => "60min",
         }
     }
 
@@ -207,16 +209,16 @@ impl std::str::FromStr for Interval {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
-            "daily" | "d"       => Ok(Self::Daily),
-            "weekly" | "w"      => Ok(Self::Weekly),
-            "monthly" | "m"     => Ok(Self::Monthly),
-            "quarterly" | "q"   => Ok(Self::Quarterly),
+            "daily" | "d" => Ok(Self::Daily),
+            "weekly" | "w" => Ok(Self::Weekly),
+            "monthly" | "m" => Ok(Self::Monthly),
+            "quarterly" | "q" => Ok(Self::Quarterly),
             "annual" | "yearly" | "y" | "a" => Ok(Self::Annual),
-            "1min"              => Ok(Self::Intraday1Min),
-            "5min"              => Ok(Self::Intraday5Min),
-            "15min"             => Ok(Self::Intraday15Min),
-            "30min"             => Ok(Self::Intraday30Min),
-            "60min"             => Ok(Self::Intraday60Min),
+            "1min" => Ok(Self::Intraday1Min),
+            "5min" => Ok(Self::Intraday5Min),
+            "15min" => Ok(Self::Intraday15Min),
+            "30min" => Ok(Self::Intraday30Min),
+            "60min" => Ok(Self::Intraday60Min),
             other => anyhow::bail!(
                 "Unknown interval '{other}'. Valid: daily, weekly, monthly, quarterly, annual, \
                  1min, 5min, 15min, 30min, 60min"
@@ -280,9 +282,19 @@ impl RawStandardResponse {
         let data = self
             .data
             .into_iter()
-            .filter_map(|p| p.value.map(|v| CommodityDataPoint { date: p.date, value: v }))
+            .filter_map(|p| {
+                p.value.map(|v| CommodityDataPoint {
+                    date: p.date,
+                    value: v,
+                })
+            })
             .collect();
-        CommodityResponse { name: self.name, interval: self.interval, unit: self.unit, data }
+        CommodityResponse {
+            name: self.name,
+            interval: self.interval,
+            unit: self.unit,
+            data,
+        }
     }
 }
 
@@ -305,7 +317,12 @@ impl RawGoldSilverResponse {
         let data = self
             .data
             .into_iter()
-            .filter_map(|p| p.price.map(|v| CommodityDataPoint { date: p.date, value: v }))
+            .filter_map(|p| {
+                p.price.map(|v| CommodityDataPoint {
+                    date: p.date,
+                    value: v,
+                })
+            })
             .collect();
         CommodityResponse {
             name: self.nominal,
@@ -362,7 +379,10 @@ impl RawEquityResponse {
                     .or_else(|| entry.get("4. close"))
                     .and_then(|v| v.as_str())
                     .and_then(|s| s.parse().ok())?;
-                Some(CommodityDataPoint { date: timestamp, value })
+                Some(CommodityDataPoint {
+                    date: timestamp,
+                    value,
+                })
             })
             .collect();
 

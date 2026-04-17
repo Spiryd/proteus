@@ -21,11 +21,11 @@ enum Action {
 impl fmt::Display for Action {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Ingest  => "Ingest    — fetch & cache configured series",
-            Self::Show    => "Show      — view cached data for a series",
+            Self::Ingest => "Ingest    — fetch & cache configured series",
+            Self::Show => "Show      — view cached data for a series",
             Self::Refresh => "Refresh   — force-refresh a series from the API",
-            Self::Status  => "Status    — cache overview",
-            Self::Quit    => "Quit",
+            Self::Status => "Status    — cache overview",
+            Self::Quit => "Quit",
         })
     }
 }
@@ -39,21 +39,21 @@ struct CommodityChoice(CommodityEndpoint);
 impl fmt::Display for CommodityChoice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match &self.0 {
-            CommodityEndpoint::Wti            => "WTI          — West Texas Intermediate crude",
-            CommodityEndpoint::Brent          => "Brent        — North Sea crude",
-            CommodityEndpoint::NaturalGas     => "Natural Gas  — Henry Hub spot price",
-            CommodityEndpoint::Copper         => "Copper",
-            CommodityEndpoint::Aluminum       => "Aluminum",
-            CommodityEndpoint::Wheat          => "Wheat",
-            CommodityEndpoint::Corn           => "Corn",
-            CommodityEndpoint::Cotton         => "Cotton",
-            CommodityEndpoint::Sugar          => "Sugar",
-            CommodityEndpoint::Coffee         => "Coffee",
-            CommodityEndpoint::Gold           => "Gold",
-            CommodityEndpoint::Silver         => "Silver",
+            CommodityEndpoint::Wti => "WTI          — West Texas Intermediate crude",
+            CommodityEndpoint::Brent => "Brent        — North Sea crude",
+            CommodityEndpoint::NaturalGas => "Natural Gas  — Henry Hub spot price",
+            CommodityEndpoint::Copper => "Copper",
+            CommodityEndpoint::Aluminum => "Aluminum",
+            CommodityEndpoint::Wheat => "Wheat",
+            CommodityEndpoint::Corn => "Corn",
+            CommodityEndpoint::Cotton => "Cotton",
+            CommodityEndpoint::Sugar => "Sugar",
+            CommodityEndpoint::Coffee => "Coffee",
+            CommodityEndpoint::Gold => "Gold",
+            CommodityEndpoint::Silver => "Silver",
             CommodityEndpoint::AllCommodities => "All Commodities Index",
-            CommodityEndpoint::Spy            => "SPY          — S&P 500 ETF (adjusted close)",
-            CommodityEndpoint::Qqq            => "QQQ          — Nasdaq-100 ETF (adjusted close)",
+            CommodityEndpoint::Spy => "SPY          — S&P 500 ETF (adjusted close)",
+            CommodityEndpoint::Qqq => "QQQ          — Nasdaq-100 ETF (adjusted close)",
         })
     }
 }
@@ -87,7 +87,7 @@ fn prompt_commodity() -> anyhow::Result<Option<CommodityEndpoint>> {
         .without_help_message()
         .prompt()
     {
-        Ok(c)  => Ok(Some(c.0)),
+        Ok(c) => Ok(Some(c.0)),
         Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(None),
         Err(e) => Err(e.into()),
     }
@@ -99,7 +99,7 @@ fn prompt_interval(endpoint: &CommodityEndpoint) -> anyhow::Result<Option<Interv
         .without_help_message()
         .prompt()
     {
-        Ok(i)  => Ok(Some(i)),
+        Ok(i) => Ok(Some(i)),
         Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(None),
         Err(e) => Err(e.into()),
     }
@@ -133,11 +133,11 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         };
 
         let result = match action {
-            Action::Ingest  => cmd_ingest(&service, &cfg).await,
-            Action::Show    => cmd_show(&service).await,
+            Action::Ingest => cmd_ingest(&service, &cfg).await,
+            Action::Show => cmd_show(&service).await,
             Action::Refresh => cmd_refresh(&service).await,
-            Action::Status  => cmd_status(&service).await,
-            Action::Quit    => break,
+            Action::Status => cmd_status(&service).await,
+            Action::Quit => break,
         };
 
         if let Err(e) = result {
@@ -167,7 +167,7 @@ async fn cmd_ingest(service: &DataService, cfg: &Config) -> anyhow::Result<()> {
         .with_default(false)
         .prompt()
     {
-        Ok(v)  => v,
+        Ok(v) => v,
         Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => return Ok(()),
         Err(e) => return Err(e.into()),
     };
@@ -179,14 +179,18 @@ async fn cmd_ingest(service: &DataService, cfg: &Config) -> anyhow::Result<()> {
 }
 
 async fn cmd_show(service: &DataService) -> anyhow::Result<()> {
-    let Some(endpoint) = prompt_commodity()? else { return Ok(()); };
-    let Some(interval) = prompt_interval(&endpoint)? else { return Ok(()); };
+    let Some(endpoint) = prompt_commodity()? else {
+        return Ok(());
+    };
+    let Some(interval) = prompt_interval(&endpoint)? else {
+        return Ok(());
+    };
 
     let limit_str = match Text::new("Data points to display:")
         .with_default("10")
         .prompt()
     {
-        Ok(s)  => s,
+        Ok(s) => s,
         Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => return Ok(()),
         Err(e) => return Err(e.into()),
     };
@@ -203,13 +207,20 @@ async fn cmd_show(service: &DataService) -> anyhow::Result<()> {
             )
         })?;
 
-    println!("\n=== {} — {} ({}) ===", endpoint, response.name, response.unit);
+    println!(
+        "\n=== {} — {} ({}) ===",
+        endpoint, response.name, response.unit
+    );
     let intraday = response.interval.ends_with("min");
     if intraday {
         println!("{:<20}  {:>14}", "Timestamp", "Close");
         println!("{:-<20}  {:->14}", "", "");
         for dp in response.data.iter().take(limit) {
-            println!("{:<20}  {:>14.4}", dp.date.format("%Y-%m-%d %H:%M"), dp.value);
+            println!(
+                "{:<20}  {:>14.4}",
+                dp.date.format("%Y-%m-%d %H:%M"),
+                dp.value
+            );
         }
     } else {
         println!("{:<12}  {:>14}", "Date", "Value");
@@ -227,12 +238,20 @@ async fn cmd_show(service: &DataService) -> anyhow::Result<()> {
 }
 
 async fn cmd_refresh(service: &DataService) -> anyhow::Result<()> {
-    let Some(endpoint) = prompt_commodity()? else { return Ok(()); };
-    let Some(interval) = prompt_interval(&endpoint)? else { return Ok(()); };
+    let Some(endpoint) = prompt_commodity()? else {
+        return Ok(());
+    };
+    let Some(interval) = prompt_interval(&endpoint)? else {
+        return Ok(());
+    };
 
     println!("\nRefreshing {} ({}) ...", endpoint, interval);
     let response = service.refresh(&endpoint, interval).await?;
-    println!("Done. {} — {} data points stored.", response.name, response.data.len());
+    println!(
+        "Done. {} — {} data points stored.",
+        response.name,
+        response.data.len()
+    );
     Ok(())
 }
 

@@ -48,11 +48,7 @@ fn simulate_hidden_path(params: &ModelParams, t: usize, rng: &mut impl Rng) -> V
 /// yₜ | Sₜ=j ~ N(μⱼ, σⱼ²)
 ///
 /// Note: `rand_distr::Normal::new` takes (mean, std_dev), so we pass σⱼ = √σⱼ².
-fn simulate_observations(
-    params: &ModelParams,
-    states: &[usize],
-    rng: &mut impl Rng,
-) -> Vec<f64> {
+fn simulate_observations(params: &ModelParams, states: &[usize], rng: &mut impl Rng) -> Vec<f64> {
     states
         .iter()
         .map(|&j| {
@@ -85,7 +81,13 @@ pub fn simulate(
     let observations = simulate_observations(&params, &states, rng);
     let k = params.k;
 
-    Ok(SimulationResult { t, k, states, observations, params })
+    Ok(SimulationResult {
+        t,
+        k,
+        states,
+        observations,
+        params,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +144,8 @@ mod tests {
             // Allow ±3% absolute tolerance.
             assert!(
                 (empirical - pi[j]).abs() < 0.03,
-                "regime {j}: empirical π̂={empirical:.4}, expected π={:.4}", pi[j]
+                "regime {j}: empirical π̂={empirical:.4}, expected π={:.4}",
+                pi[j]
             );
         }
     }
@@ -230,7 +233,8 @@ mod tests {
             let sample_mean = obs_j.iter().sum::<f64>() / n;
             assert!(
                 (sample_mean - means[j]).abs() < 0.1,
-                "regime {j}: sample mean={sample_mean:.4}, μ={}", means[j]
+                "regime {j}: sample mean={sample_mean:.4}, μ={}",
+                means[j]
             );
         }
     }

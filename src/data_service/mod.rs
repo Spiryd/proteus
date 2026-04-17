@@ -32,8 +32,8 @@ impl DataService {
         let interval_str = interval.as_str().to_string();
         let cache = Arc::clone(&self.cache);
 
-        let cached = tokio::task::spawn_blocking(move || cache.load(&symbol, &interval_str))
-            .await??;
+        let cached =
+            tokio::task::spawn_blocking(move || cache.load(&symbol, &interval_str)).await??;
 
         if let Some(response) = cached {
             return Ok(response);
@@ -41,7 +41,8 @@ impl DataService {
 
         // Cache miss or stale — fetch from API.
         let response = self.client.commodity_history(endpoint, interval).await?;
-        self.write_cache(endpoint, interval, response.clone()).await?;
+        self.write_cache(endpoint, interval, response.clone())
+            .await?;
         Ok(response)
     }
 
@@ -52,7 +53,8 @@ impl DataService {
         interval: Interval,
     ) -> anyhow::Result<CommodityResponse> {
         let response = self.client.commodity_history(endpoint, interval).await?;
-        self.write_cache(endpoint, interval, response.clone()).await?;
+        self.write_cache(endpoint, interval, response.clone())
+            .await?;
         Ok(response)
     }
 
@@ -69,11 +71,7 @@ impl DataService {
     }
 
     /// Ingest all series listed in `[ingest]`, skipping fresh ones unless `force = true`.
-    pub async fn ingest_all(
-        &self,
-        series: &[IngestSeriesItem],
-        force: bool,
-    ) -> anyhow::Result<()> {
+    pub async fn ingest_all(&self, series: &[IngestSeriesItem], force: bool) -> anyhow::Result<()> {
         for item in series {
             let endpoint: CommodityEndpoint = item.commodity.parse()?;
             let interval: Interval = item.interval.parse()?;
@@ -84,8 +82,8 @@ impl DataService {
                 let cache = Arc::clone(&self.cache);
                 let sym = symbol.clone();
                 let iv = interval_str.clone();
-                let cached = tokio::task::spawn_blocking(move || cache.last_fetched(&sym, &iv))
-                    .await??;
+                let cached =
+                    tokio::task::spawn_blocking(move || cache.last_fetched(&sym, &iv)).await??;
 
                 if cached.is_some() {
                     println!("[skip]  {} ({}) — already cached", symbol, interval_str);
@@ -102,7 +100,9 @@ impl DataService {
                     self.write_cache(&endpoint, interval, response).await?;
                     println!(
                         "[ok]    {} ({}) — {} points  (fetch {:.1}s, total {:.1}s)",
-                        symbol, interval_str, count,
+                        symbol,
+                        interval_str,
+                        count,
                         fetch_elapsed.as_secs_f32(),
                         series_start.elapsed().as_secs_f32()
                     );

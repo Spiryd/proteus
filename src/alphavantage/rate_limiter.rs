@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::Semaphore;
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 
 pub struct RateLimiter {
     semaphore: Arc<Semaphore>,

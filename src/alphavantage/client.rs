@@ -1,10 +1,10 @@
-use chrono::{Datelike, Utc};
 use super::commodity::{
     CommodityDataPoint, CommodityEndpoint, CommodityResponse, Interval, RawEquityResponse,
     RawGoldSilverResponse, RawStandardResponse,
 };
 use super::rate_limiter::RateLimiter;
 use crate::config::Config;
+use chrono::{Datelike, Utc};
 
 const DEFAULT_BASE_URL: &str = "https://www.alphavantage.co/query";
 const DEFAULT_RATE_LIMIT: u32 = 75;
@@ -23,7 +23,10 @@ impl AlphaVantageClient {
             .base_url
             .clone()
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-        let rpm = config.alphavantage.rate_limit_per_minute.unwrap_or(DEFAULT_RATE_LIMIT);
+        let rpm = config
+            .alphavantage
+            .rate_limit_per_minute
+            .unwrap_or(DEFAULT_RATE_LIMIT);
         Self {
             http: reqwest::Client::new(),
             api_key: config.alphavantage.api_key.clone(),
@@ -55,8 +58,11 @@ impl AlphaVantageClient {
     ) -> anyhow::Result<CommodityResponse> {
         let supported = endpoint.supported_intervals();
         if !supported.contains(&interval) {
-            let supported_str =
-                supported.iter().map(|i| i.as_str()).collect::<Vec<_>>().join(", ");
+            let supported_str = supported
+                .iter()
+                .map(|i| i.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
             anyhow::bail!(
                 "Interval '{}' is not supported by {}. Accepted: {}",
                 interval,
@@ -147,7 +153,10 @@ impl AlphaVantageClient {
         let mut year = today.year();
         let mut month = today.month();
 
-        println!("[intraday] {ticker} ({}) — fetching full history month by month …", interval.as_str());
+        println!(
+            "[intraday] {ticker} ({}) — fetching full history month by month …",
+            interval.as_str()
+        );
 
         loop {
             let month_str = format!("{year:04}-{month:02}");
@@ -159,7 +168,11 @@ impl AlphaVantageClient {
 
             let url = format!(
                 "{}?function=TIME_SERIES_INTRADAY&symbol={}&interval={}&month={}&outputsize=full&datatype=json&apikey={}",
-                self.base_url, ticker, interval.as_str(), month_str, self.api_key,
+                self.base_url,
+                ticker,
+                interval.as_str(),
+                month_str,
+                self.api_key,
             );
 
             let json: serde_json::Value = self
@@ -214,7 +227,8 @@ impl AlphaVantageClient {
             }
 
             months_fetched += 1;
-            println!("{} points  (total so far: {})  [{:.1}s]",
+            println!(
+                "{} points  (total so far: {})  [{:.1}s]",
                 points_in_month.len(),
                 all_points.len() + points_in_month.len(),
                 req_start.elapsed().as_secs_f32()
