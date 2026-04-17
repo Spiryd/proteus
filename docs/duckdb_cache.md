@@ -36,7 +36,7 @@ Stores the individual date/value data points.
 |--------------|-----------|--------------------------|
 | `symbol`     | VARCHAR   |                          |
 | `interval`   | VARCHAR   |                          |
-| `date`       | DATE      | Normalised to first of month for monthly/quarterly data |
+| `date`       | TIMESTAMP | Intraday: full datetime. Daily/weekly: midnight. Monthly: 1st of month at midnight. |
 | `value`      | DOUBLE    |                          |
 | `fetched_at` | TIMESTAMP | UTC timestamp of the fetch |
 
@@ -50,6 +50,16 @@ Each `store()` call does a full replace for that series:
 2. `INSERT` the new data points
 
 This keeps the cache in sync with the API response without manual diff logic.
+
+## Schema migration
+
+On every startup `init_schema()` silently runs:
+
+```sql
+ALTER TABLE commodity_prices ALTER COLUMN date TYPE TIMESTAMP;
+```
+
+This is a no-op when the column is already `TIMESTAMP`. It upgrades existing databases that were created with the legacy `DATE` column type before intraday support was added.
 
 ## `CommodityCache` API
 

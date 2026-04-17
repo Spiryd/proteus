@@ -28,6 +28,10 @@ path = "data/commodities.duckdb"   # default, can be omitted
 
 [ingest]
 series = [
+    { commodity = "spy",         interval = "daily"     },
+    { commodity = "spy",         interval = "60min"     },
+    { commodity = "qqq",         interval = "daily"     },
+    { commodity = "qqq",         interval = "60min"     },
     { commodity = "wti",         interval = "monthly"   },
     { commodity = "brent",       interval = "monthly"   },
     { commodity = "natural_gas", interval = "weekly"    },
@@ -79,6 +83,8 @@ See [docs/interactive_cli.md](docs/interactive_cli.md) for full details.
 ### Data Sources
 
 Data is sourced from the [Alpha Vantage API](https://www.alphavantage.co), which provides full historical commodity price series. Supported commodities include WTI, Brent, Natural Gas, Copper, Aluminum, Wheat, Corn, Cotton, Sugar, Coffee, Gold, Silver, and the All Commodities Index, each available at daily, weekly, monthly, quarterly, or annual resolution (depending on the endpoint).
+
+SPY and QQQ equity ETFs are also supported, with intraday resolution (`1min`, `5min`, `15min`, `30min`, `60min`) in addition to daily, weekly, and monthly.
 
 The HTTP client is rate-limited to 75 requests per minute by default (configurable). See [docs/alphavantage_client.md](docs/alphavantage_client.md) for API details.
 

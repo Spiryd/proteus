@@ -1,4 +1,4 @@
-use chrono::{NaiveDate, NaiveDateTime, Utc};
+use chrono::{NaiveDateTime, Utc};
 use duckdb::OptionalExt;
 use std::sync::Mutex;
 
@@ -11,8 +11,8 @@ pub struct SeriesStatus {
     pub name: String,
     pub unit: String,
     pub point_count: i64,
-    pub from_date: NaiveDate,
-    pub to_date: NaiveDate,
+    pub from_date: NaiveDateTime,
+    pub to_date: NaiveDateTime,
     pub last_fetched: NaiveDateTime,
 }
 
@@ -38,6 +38,11 @@ impl CommodityCache {
 
     fn init_schema(&self) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
+        // Migrate existing databases: upgrade date column from DATE to TIMESTAMP.
+        // Ignored if table doesn't exist yet or column is already TIMESTAMP.
+        let _ = conn.execute_batch(
+            "ALTER TABLE commodity_prices ALTER COLUMN date TYPE TIMESTAMP;",
+        );
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS commodity_meta (
                 symbol   VARCHAR NOT NULL,
@@ -49,7 +54,7 @@ impl CommodityCache {
             CREATE TABLE IF NOT EXISTS commodity_prices (
                 symbol     VARCHAR    NOT NULL,
                 interval   VARCHAR    NOT NULL,
-                date       DATE       NOT NULL,
+                date       TIMESTAMP  NOT NULL,
                 value      DOUBLE     NOT NULL,
                 fetched_at TIMESTAMP  NOT NULL,
                 PRIMARY KEY (symbol, interval, date)
@@ -136,7 +141,14 @@ impl CommodityCache {
     ) -> anyhow::Result<usize> {
         let conn = self.conn.lock().unwrap();
         let fetched_at = Utc::now().naive_utc();
+        let total_start = std::time::Instant::now();
 
+        // Wrap everything in a single transaction — avoids one disk sync per row,
+        // which is the main reason row-by-row inserts are slow.
+        conn.execute_batch("BEGIN")
+            .map_err(|e| anyhow::anyhow!("BEGIN failed: {e}"))?;
+
+        let t = std::time::Instant::now();
         conn.execute(
             "DELETE FROM commodity_prices WHERE symbol = ? AND interval = ?",
             duckdb::params![symbol, interval],
@@ -147,6 +159,7 @@ impl CommodityCache {
             duckdb::params![symbol, interval],
         )
         .map_err(|e| anyhow::anyhow!("Delete meta failed: {e}"))?;
+        println!("  [db] delete:       {:.3}s", t.elapsed().as_secs_f32());
 
         conn.execute(
             "INSERT INTO commodity_meta (symbol, interval, name, unit) VALUES (?, ?, ?, ?)",
@@ -154,6 +167,7 @@ impl CommodityCache {
         )
         .map_err(|e| anyhow::anyhow!("Insert meta failed: {e}"))?;
 
+        let t = std::time::Instant::now();
         let mut stmt = conn
             .prepare(
                 "INSERT INTO commodity_prices (symbol, interval, date, value, fetched_at)
@@ -171,6 +185,13 @@ impl CommodityCache {
             ])
             .map_err(|e| anyhow::anyhow!("Insert point failed: {e}"))?;
         }
+        println!("  [db] insert {} rows: {:.3}s", response.data.len(), t.elapsed().as_secs_f32());
+
+        let t = std::time::Instant::now();
+        conn.execute_batch("COMMIT")
+            .map_err(|e| anyhow::anyhow!("COMMIT failed: {e}"))?;
+        println!("  [db] commit:       {:.3}s", t.elapsed().as_secs_f32());
+        println!("  [db] total store:  {:.3}s  ({} points)", total_start.elapsed().as_secs_f32(), response.data.len());
 
         Ok(response.data.len())
     }

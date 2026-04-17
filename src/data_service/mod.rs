@@ -94,11 +94,18 @@ impl DataService {
             }
 
             println!("[fetch] {} ({}) ...", symbol, interval_str);
+            let series_start = std::time::Instant::now();
             match self.client.commodity_history(&endpoint, interval).await {
                 Ok(response) => {
                     let count = response.data.len();
+                    let fetch_elapsed = series_start.elapsed();
                     self.write_cache(&endpoint, interval, response).await?;
-                    println!("[ok]    {} ({}) — {} data points stored", symbol, interval_str, count);
+                    println!(
+                        "[ok]    {} ({}) — {} points  (fetch {:.1}s, total {:.1}s)",
+                        symbol, interval_str, count,
+                        fetch_elapsed.as_secs_f32(),
+                        series_start.elapsed().as_secs_f32()
+                    );
                 }
                 Err(e) => {
                     eprintln!("[error] {} ({}): {e}", symbol, interval_str);

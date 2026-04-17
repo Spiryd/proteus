@@ -51,6 +51,8 @@ Displays cached data for a chosen series — never makes an API call.
 2. Select interval (filtered to only intervals that endpoint supports)
 3. Enter number of data points to display (default: 10)
 
+Non-intraday series show only the date:
+
 ```
 === WTI — West Texas Intermediate (dollars per barrel) ===
 Date            Value
@@ -60,6 +62,19 @@ Date            Value
 ...
 
 10 of 276 total data points shown.
+```
+
+Intraday series (interval ends with `min`) show the full timestamp:
+
+```
+=== SPY — SPDR S&P 500 ETF Trust (USD) ===
+Timestamp               Close
+--------------------  --------------
+2026-04-14 20:00       552.1300
+2026-04-14 19:00       551.9800
+...
+
+10 of 390 total data points shown.
 ```
 
 ### Refresh
@@ -77,9 +92,12 @@ Tabular overview of everything currently in the cache:
 ```
 Symbol               Interval   Name                           Points   From         To           Last Fetched
 ----------------------------------------------------------------------------------------------------------------
+SPY                  60min      SPDR S&P 500 ETF Trust         390      2026-04-13   2026-04-14   2026-04-15 09:01:44
 BRENT                monthly    Brent (ICE) Crude Oil Prices   276      1987-05-01   2025-12-01   2026-04-13 14:32:01
 WTI                  monthly    West Texas Intermediate...     276      1983-01-01   2025-12-01   2026-04-13 14:31:58
 ```
+
+The **From** / **To** columns always show the date part only (no time component), regardless of whether the series is intraday.
 
 ## Cancellation
 

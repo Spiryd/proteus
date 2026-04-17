@@ -52,6 +52,8 @@ impl fmt::Display for CommodityChoice {
             CommodityEndpoint::Gold           => "Gold",
             CommodityEndpoint::Silver         => "Silver",
             CommodityEndpoint::AllCommodities => "All Commodities Index",
+            CommodityEndpoint::Spy            => "SPY          — S&P 500 ETF (adjusted close)",
+            CommodityEndpoint::Qqq            => "QQQ          — Nasdaq-100 ETF (adjusted close)",
         })
     }
 }
@@ -71,6 +73,8 @@ fn commodity_choices() -> Vec<CommodityChoice> {
         CommodityChoice(CommodityEndpoint::Gold),
         CommodityChoice(CommodityEndpoint::Silver),
         CommodityChoice(CommodityEndpoint::AllCommodities),
+        CommodityChoice(CommodityEndpoint::Spy),
+        CommodityChoice(CommodityEndpoint::Qqq),
     ]
 }
 
@@ -200,10 +204,19 @@ async fn cmd_show(service: &DataService) -> anyhow::Result<()> {
         })?;
 
     println!("\n=== {} — {} ({}) ===", endpoint, response.name, response.unit);
-    println!("{:<12}  {:>14}", "Date", "Value");
-    println!("{:-<12}  {:->14}", "", "");
-    for dp in response.data.iter().take(limit) {
-        println!("{:<12}  {:>14.4}", dp.date, dp.value);
+    let intraday = response.interval.ends_with("min");
+    if intraday {
+        println!("{:<20}  {:>14}", "Timestamp", "Close");
+        println!("{:-<20}  {:->14}", "", "");
+        for dp in response.data.iter().take(limit) {
+            println!("{:<20}  {:>14.4}", dp.date.format("%Y-%m-%d %H:%M"), dp.value);
+        }
+    } else {
+        println!("{:<12}  {:>14}", "Date", "Value");
+        println!("{:-<12}  {:->14}", "", "");
+        for dp in response.data.iter().take(limit) {
+            println!("{:<12}  {:>14.4}", dp.date.date(), dp.value);
+        }
     }
     println!(
         "\n{} of {} total data points shown.",
@@ -243,8 +256,8 @@ async fn cmd_status(service: &DataService) -> anyhow::Result<()> {
             s.interval,
             s.name,
             s.point_count,
-            s.from_date,
-            s.to_date,
+            s.from_date.date(),
+            s.to_date.date(),
             s.last_fetched.format("%Y-%m-%d %H:%M:%S")
         );
     }

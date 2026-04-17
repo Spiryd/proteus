@@ -10,10 +10,12 @@ Proteus is an async Rust client for the [Alpha Vantage](https://www.alphavantage
 |---|---|
 | `reqwest` | Async HTTP (JSON feature) |
 | `serde` / `serde_json` | JSON deserialisation |
-| `chrono` | Typed date values (`NaiveDate`) |
+| `chrono` | Typed date/datetime values (`NaiveDateTime`) |
 | `tokio` | Async runtime |
 | `toml` | Config file parsing |
 | `anyhow` | Error handling |
+| `duckdb` | Embedded DuckDB database (bundled + chrono features) |
+| `inquire` | Interactive terminal prompts |
 
 ---
 
@@ -66,7 +68,9 @@ impl AlphaVantageClient {
     // Override base URL (useful for proxies / testing)
     pub fn with_base_url(self, base_url: impl Into<String>) -> Self;
 
-    // Fetch historic prices for a commodity endpoint + interval
+    // Fetch historic prices for a commodity endpoint + interval.
+    // For intraday equity (SPY/QQQ + Intraday* intervals) this transparently
+    // paginates through every available calendar month to return the full history.
     pub async fn commodity_history(
         &self,
         endpoint: &CommodityEndpoint,
@@ -100,23 +104,55 @@ Each data point in the response holds typed Rust values — no manual parsing re
 
 ```rust
 pub struct CommodityDataPoint {
-    pub date:  chrono::NaiveDate,   // parsed from "YYYY-MM-DD" or "YYYY-MM"
-    pub value: f64,                 // parsed from the API's string representation
+    pub date:  chrono::NaiveDateTime,  // parsed from "YYYY-MM-DD HH:MM:SS", "YYYY-MM-DD", or "YYYY-MM"
+    pub value: f64,                    // parsed from the API's string representation
 }
 ```
 
-`date` handles both full dates (`2024-03-15`) and year-month strings (`2024-03`), normalising the latter to the 1st of that month.
+`date` handles three formats:
+- Intraday: `"2026-04-14 20:00:00"` — stored as-is.
+- Daily / weekly: `"2024-03-15"` — stored at midnight (`00:00:00`).
+- Monthly / quarterly: `"2024-03"` — normalised to the 1st of the month at midnight.
 
 ### `CommodityResponse`
 
 ```rust
 pub struct CommodityResponse {
     pub name:     String,
-    pub interval: String,
+    pub interval: String,   // e.g. "monthly", "daily", "60min"
     pub unit:     String,
     pub data:     Vec<CommodityDataPoint>,
 }
 ```
+
+---
+
+## Intervals
+
+The `Interval` enum covers all resolutions exposed by the API:
+
+| Variant | `as_str()` | Supported by |
+|---|---|---|
+| `Daily` | `"daily"` | all commodities, SPY, QQQ |
+| `Weekly` | `"weekly"` | all commodities, SPY, QQQ |
+| `Monthly` | `"monthly"` | all commodities, SPY, QQQ |
+| `Quarterly` | `"quarterly"` | commodity indices only |
+| `Annual` | `"annual"` | commodity indices only |
+| `Intraday1Min` | `"1min"` | SPY, QQQ |
+| `Intraday5Min` | `"5min"` | SPY, QQQ |
+| `Intraday15Min` | `"15min"` | SPY, QQQ |
+| `Intraday30Min` | `"30min"` | SPY, QQQ |
+| `Intraday60Min` | `"60min"` | SPY, QQQ |
+
+`Interval::is_intraday()` returns `true` for the five intraday variants. The client uses this flag to select the `TIME_SERIES_INTRADAY` endpoint (with an `interval` query parameter) instead of the adjusted daily/weekly/monthly endpoints.
+
+### Intraday full-history pagination
+
+`TIME_SERIES_INTRADAY` returns at most one month of data per request. When `commodity_history` is called with an intraday interval for SPY or QQQ, it automatically paginates backwards month-by-month from today, collecting all available data.
+
+**Termination**: Alpha Vantage does not return an error for unavailable months — it silently falls back to the most recent period. The client detects exhaustion by filtering each response to only data points that fall within the requested month; an empty result stops further pagination.
+
+**API cost**: each month is one request, so fetching several years of 1-minute data will consume many rate-limit tokens. With the default 75 rpm limit, a full SPY history (~30 years ≈ 360 months) takes approximately 5 minutes.
 
 ---
 
@@ -201,20 +237,6 @@ Passing an unsupported interval (e.g. `Interval::Daily` to `Copper`) returns an 
 
 ---
 
-## Intervals
-
-```rust
-pub enum Interval {
-    Daily,
-    Weekly,
-    Monthly,
-    Quarterly,
-    Annual,
-}
-```
-
----
-
 ## Usage Example
 
 ```rust
@@ -229,7 +251,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("{} ({})", resp.name, resp.unit);
     for point in resp.data.iter().take(5) {
-        // point.date  -> chrono::NaiveDate
+        // point.date  -> chrono::NaiveDateTime
         // point.value -> f64
         println!("{} — ${:.2}", point.date, point.value);
     }
