@@ -3,6 +3,7 @@ mod cache;
 mod cli;
 mod config;
 mod data_service;
+mod model;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
