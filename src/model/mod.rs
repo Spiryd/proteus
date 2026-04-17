@@ -3,6 +3,7 @@ pub mod filter;
 pub mod likelihood;
 pub mod params;
 pub mod simulate;
+pub mod validation;
 
 pub use emission::Emission;
 pub use filter::{FilterResult, filter};
