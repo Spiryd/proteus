@@ -276,10 +276,30 @@ mod tests {
     fn structural_invariants_k2_scenarios() {
         let scenarios: Vec<(Vec<f64>, Vec<Vec<f64>>, Vec<f64>, Vec<f64>)> = vec![
             // (pi, P, means, variances)
-            (vec![0.5, 0.5], vec![vec![0.99, 0.01], vec![0.01, 0.99]], vec![-10.0, 10.0], vec![1.0, 1.0]),
-            (vec![0.5, 0.5], vec![vec![0.9, 0.1], vec![0.1, 0.9]],   vec![-0.5, 0.5],  vec![1.0, 1.0]),
-            (vec![0.5, 0.5], vec![vec![0.4, 0.6], vec![0.6, 0.4]],   vec![-5.0, 5.0],  vec![1.0, 1.0]),
-            (vec![0.5, 0.5], vec![vec![0.95, 0.05], vec![0.05, 0.95]], vec![0.0, 0.0], vec![0.25, 9.0]),
+            (
+                vec![0.5, 0.5],
+                vec![vec![0.99, 0.01], vec![0.01, 0.99]],
+                vec![-10.0, 10.0],
+                vec![1.0, 1.0],
+            ),
+            (
+                vec![0.5, 0.5],
+                vec![vec![0.9, 0.1], vec![0.1, 0.9]],
+                vec![-0.5, 0.5],
+                vec![1.0, 1.0],
+            ),
+            (
+                vec![0.5, 0.5],
+                vec![vec![0.4, 0.6], vec![0.6, 0.4]],
+                vec![-5.0, 5.0],
+                vec![1.0, 1.0],
+            ),
+            (
+                vec![0.5, 0.5],
+                vec![vec![0.95, 0.05], vec![0.05, 0.95]],
+                vec![0.0, 0.0],
+                vec![0.25, 9.0],
+            ),
         ];
 
         for (pi, p_mat, means, vars) in scenarios {
