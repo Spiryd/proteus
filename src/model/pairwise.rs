@@ -176,7 +176,7 @@ pub fn pairwise(
     let mut xi: Vec<Vec<Vec<f64>>> = vec![vec![vec![0.0_f64; k]; k]; t_len - 1];
     let mut expected_transitions: Vec<Vec<f64>> = vec![vec![0.0_f64; k]; k];
 
-    for s in 0..t_len - 1 {
+    for (s, xi_step) in xi.iter_mut().enumerate() {
         // 0-based mapping:
         //   filtered[s][i]    = α_{s+1|s+1}(i)   (math: α_{t-1|t-1}(i), t = s+2)
         //   predicted[s+1][j] = α_{s+2|s+1}(j)   (math: α_{t|t-1}(j))
@@ -191,12 +191,12 @@ pub fn pairwise(
                 let denom = pred_next[j];
                 if denom < DENOM_FLOOR {
                     // Predicted weight is negligibly small; contribution skipped.
-                    xi[s][i][j] = 0.0;
+                    xi_step[i][j] = 0.0;
                 } else {
-                    xi[s][i][j] = filt_prev[i] * row_p[j] * smooth_next[j] / denom;
+                    xi_step[i][j] = filt_prev[i] * row_p[j] * smooth_next[j] / denom;
                 }
 
-                expected_transitions[i][j] += xi[s][i][j];
+                expected_transitions[i][j] += xi_step[i][j];
             }
         }
     }

@@ -168,8 +168,8 @@ pub fn filter(params: &ModelParams, obs: &[f64]) -> Result<FilterResult> {
 #[inline]
 fn predict(params: &ModelParams, filtered_prev: &[f64], k: usize) -> Vec<f64> {
     let mut pred = vec![0.0_f64; k];
-    for j in 0..k {
-        pred[j] = (0..k)
+    for (j, p) in pred.iter_mut().enumerate() {
+        *p = (0..k)
             .map(|i| params.transition_row(i)[j] * filtered_prev[i])
             .sum();
     }
