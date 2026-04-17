@@ -64,7 +64,11 @@ impl Emission {
     /// K is inferred from `means.len()`. Lengths must match.
     pub fn new(means: Vec<f64>, variances: Vec<f64>) -> Self {
         let k = means.len();
-        Self { k, means, variances }
+        Self {
+            k,
+            means,
+            variances,
+        }
     }
 
     /// Validate all parameter constraints.
@@ -88,9 +92,7 @@ impl Emission {
         }
         for (j, &v) in self.variances.iter().enumerate() {
             if v <= 0.0 {
-                anyhow::bail!(
-                    "Emission: variance[{j}] = {v} — σⱼ² must be strictly positive"
-                );
+                anyhow::bail!("Emission: variance[{j}] = {v} — σⱼ² must be strictly positive");
             }
         }
         Ok(())
@@ -251,7 +253,7 @@ mod tests {
     #[test]
     fn test_larger_variance_lower_peak() {
         let narrow = Emission::new(vec![0.0], vec![0.5]); // σ²=0.5
-        let wide = Emission::new(vec![0.0], vec![4.0]);   // σ²=4
+        let wide = Emission::new(vec![0.0], vec![4.0]); // σ²=4
 
         assert!(
             narrow.density(0.0, 0) > wide.density(0.0, 0),
@@ -305,13 +307,19 @@ mod tests {
     #[test]
     fn test_validate_rejects_zero_variance() {
         let e = Emission::new(vec![0.0, 1.0], vec![1.0, 0.0]);
-        assert!(e.validate().is_err(), "zero variance should fail validation");
+        assert!(
+            e.validate().is_err(),
+            "zero variance should fail validation"
+        );
     }
 
     #[test]
     fn test_validate_rejects_negative_variance() {
         let e = Emission::new(vec![0.0], vec![-1.0]);
-        assert!(e.validate().is_err(), "negative variance should fail validation");
+        assert!(
+            e.validate().is_err(),
+            "negative variance should fail validation"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -320,7 +328,10 @@ mod tests {
     #[test]
     fn test_validate_rejects_length_mismatch() {
         let e = Emission::new(vec![0.0, 1.0], vec![1.0]); // 2 means, 1 variance
-        assert!(e.validate().is_err(), "length mismatch should fail validation");
+        assert!(
+            e.validate().is_err(),
+            "length mismatch should fail validation"
+        );
     }
 
     // -----------------------------------------------------------------------
