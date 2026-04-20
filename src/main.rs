@@ -4,6 +4,7 @@ mod cli;
 mod config;
 mod data_service;
 mod model;
+mod online;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
