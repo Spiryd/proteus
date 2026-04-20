@@ -176,9 +176,9 @@ impl OnlineFilterState {
         // `self.filtered` currently holds α_{t-1|t-1}.
         // ------------------------------------------------------------------
         let mut predicted = vec![0.0_f64; k];
-        for j in 0..k {
+        for (j, item) in predicted.iter_mut().enumerate().take(k) {
             for i in 0..k {
-                predicted[j] += params.transition_row(i)[j] * self.filtered[i];
+                *item += params.transition_row(i)[j] * self.filtered[i];
             }
         }
 
@@ -256,9 +256,9 @@ impl OnlineFilterState {
         // One-step-ahead prediction: α_{t+1|t}(j) = Σᵢ p_{ij} · α_{t|t}(i)
         // ------------------------------------------------------------------
         let mut predicted_next = vec![0.0_f64; k];
-        for j in 0..k {
-            for i in 0..k {
-                predicted_next[j] += params.transition_row(i)[j] * new_filtered[i];
+        for (j, item) in predicted_next.iter_mut().enumerate().take(k) {
+            for (i, &nf) in new_filtered.iter().enumerate().take(k) {
+                *item += params.transition_row(i)[j] * nf;
             }
         }
 

@@ -3,6 +3,7 @@ mod cache;
 mod cli;
 mod config;
 mod data_service;
+mod detector;
 mod model;
 mod online;
 
