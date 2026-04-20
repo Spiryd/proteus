@@ -1,3 +1,4 @@
+pub mod diagnostics;
 pub mod em;
 pub mod emission;
 pub mod filter;
@@ -8,6 +9,11 @@ pub mod simulate;
 pub mod smoother;
 pub mod validation;
 
+pub use diagnostics::{
+    ConvergenceSummary, DiagnosticWarning, FittedModelDiagnostics, MultiStartSummary,
+    ParamValidity, PosteriorValidity, RegimeSummary, RunSummary, StopReason, compare_runs,
+    diagnose,
+};
 pub use em::{EStepResult, EmConfig, EmResult, fit_em};
 pub use emission::Emission;
 pub use filter::{FilterResult, filter};
