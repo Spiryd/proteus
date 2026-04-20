@@ -34,10 +34,12 @@
 ///
 /// Every detector produces decisions using only `y_{1:t}`.  Smoothed
 /// quantities, EM updates, and future observations are never accessed here.
+pub mod frozen;
 pub mod hard_switch;
 pub mod posterior_transition;
 pub mod surprise;
 
+pub use frozen::{FrozenModel, SessionStepOutput, StreamingSession};
 pub use hard_switch::{HardSwitchConfig, HardSwitchDetector};
 pub use posterior_transition::{
     PosteriorTransitionConfig, PosteriorTransitionDetector, PosteriorTransitionScoreKind,
