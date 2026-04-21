@@ -3,8 +3,10 @@ mod benchmark;
 mod cache;
 mod cli;
 mod config;
+mod data;
 mod data_service;
 mod detector;
+mod features;
 mod model;
 mod online;
 
