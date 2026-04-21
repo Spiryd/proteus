@@ -1,4 +1,5 @@
 mod alphavantage;
+mod benchmark;
 mod cache;
 mod cli;
 mod config;
