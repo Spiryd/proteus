@@ -1,6 +1,7 @@
 mod alphavantage;
 mod benchmark;
 mod cache;
+mod calibration;
 mod cli;
 mod config;
 mod data;
