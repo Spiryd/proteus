@@ -10,6 +10,7 @@ mod detector;
 mod features;
 mod model;
 mod online;
+mod real_eval;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
