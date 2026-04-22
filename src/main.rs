@@ -7,6 +7,7 @@ mod config;
 mod data;
 mod data_service;
 mod detector;
+mod experiments;
 mod features;
 mod model;
 mod online;
