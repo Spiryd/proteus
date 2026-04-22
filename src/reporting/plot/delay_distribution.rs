@@ -1,6 +1,6 @@
 use plotters::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelayDistributionPlotInput {
@@ -51,12 +51,10 @@ pub fn render_delay_distribution(
     for (i, &count) in bins.iter().enumerate() {
         if count > 0 {
             let x = i as f64;
-            chart.draw_series(std::iter::once(
-                Rectangle::new(
-                    [(x - 0.4, 0.0), (x + 0.4, count as f64)],
-                    BLUE.filled(),
-                ),
-            ))?;
+            chart.draw_series(std::iter::once(Rectangle::new(
+                [(x - 0.4, 0.0), (x + 0.4, count as f64)],
+                BLUE.filled(),
+            )))?;
         }
     }
 

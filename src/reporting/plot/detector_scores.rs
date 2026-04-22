@@ -1,7 +1,7 @@
-use plotters::prelude::*;
 use chrono::{DateTime, Utc};
+use plotters::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectorScoresPlotInput {
@@ -26,7 +26,11 @@ pub fn render_detector_scores(
     let min_ts = input.timestamps[0].timestamp();
     let max_ts = input.timestamps.last().unwrap().timestamp();
     let min_score = input.scores.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max_score = input.scores.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+    let max_score = input
+        .scores
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max)
         .max(input.threshold * 1.2);
 
     let mut chart = ChartBuilder::on(&root)
@@ -34,10 +38,7 @@ pub fn render_detector_scores(
         .margin(15)
         .x_label_area_size(30)
         .y_label_area_size(60)
-        .build_cartesian_2d(
-            (min_ts as f64)..(max_ts as f64),
-            min_score..max_score,
-        )?;
+        .build_cartesian_2d((min_ts as f64)..(max_ts as f64), min_score..max_score)?;
 
     chart
         .configure_mesh()
@@ -45,29 +46,27 @@ pub fn render_detector_scores(
         .y_desc("Detector Score")
         .draw()?;
 
-    chart.draw_series(
-        input.scores.iter().enumerate().map(|(i, &score)| {
-            let x = input.timestamps[i].timestamp() as f64;
-            Circle::new((x, score), 1, BLUE)
-        })
-    )?;
+    chart.draw_series(input.scores.iter().enumerate().map(|(i, &score)| {
+        let x = input.timestamps[i].timestamp() as f64;
+        Circle::new((x, score), 1, BLUE)
+    }))?;
 
-    chart.draw_series(std::iter::once(
-        PathElement::new(
-            vec![(min_ts as f64, input.threshold), (max_ts as f64, input.threshold)],
-            RED,
-        ),
-    ))?;
+    chart.draw_series(std::iter::once(PathElement::new(
+        vec![
+            (min_ts as f64, input.threshold),
+            (max_ts as f64, input.threshold),
+        ],
+        RED,
+    )))?;
 
     for (ts, is_alarm) in &input.alarms {
         if *is_alarm {
             let x = ts.timestamp() as f64;
-            if let Some(&score) = input.scores.get(
-                input.timestamps.iter().position(|&t| t == *ts).unwrap_or(0)
-            ) {
-                chart.draw_series(std::iter::once(
-                    Circle::new((x, score), 4, RED.filled()),
-                ))?;
+            if let Some(&score) = input
+                .scores
+                .get(input.timestamps.iter().position(|&t| t == *ts).unwrap_or(0))
+            {
+                chart.draw_series(std::iter::once(Circle::new((x, score), 4, RED.filled())))?;
             }
         }
     }

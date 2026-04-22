@@ -1,7 +1,7 @@
-use plotters::prelude::*;
 use chrono::{DateTime, Utc};
+use plotters::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignalWithAlarmsPlotInput {
@@ -26,18 +26,23 @@ pub fn render_signal_with_alarms(
 
     let min_ts = input.timestamps[0].timestamp();
     let max_ts = input.timestamps.last().unwrap().timestamp();
-    let min_obs = input.observations.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max_obs = input.observations.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let min_obs = input
+        .observations
+        .iter()
+        .cloned()
+        .fold(f64::INFINITY, f64::min);
+    let max_obs = input
+        .observations
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
 
     let mut chart = ChartBuilder::on(&root)
         .caption(&input.title, ("sans-serif", 30))
         .margin(15)
         .x_label_area_size(30)
         .y_label_area_size(60)
-        .build_cartesian_2d(
-            (min_ts as f64)..(max_ts as f64),
-            min_obs..max_obs,
-        )?;
+        .build_cartesian_2d((min_ts as f64)..(max_ts as f64), min_obs..max_obs)?;
 
     chart
         .configure_mesh()
@@ -45,28 +50,28 @@ pub fn render_signal_with_alarms(
         .y_desc(&input.y_label)
         .draw()?;
 
-    chart.draw_series(
-        input.observations.iter().enumerate().map(|(i, &y)| {
-            let x = input.timestamps[i].timestamp() as f64;
-            Circle::new((x, y), 2, BLUE)
-        })
-    )?;
+    chart.draw_series(input.observations.iter().enumerate().map(|(i, &y)| {
+        let x = input.timestamps[i].timestamp() as f64;
+        Circle::new((x, y), 2, BLUE)
+    }))?;
 
     if let Some(cps) = &input.true_changepoints {
         for cp in cps {
             let x = cp.timestamp() as f64;
-            chart.draw_series(std::iter::once(
-                Rectangle::new([(x, min_obs), (x, max_obs)], BLUE.mix(0.3)),
-            ))?;
+            chart.draw_series(std::iter::once(Rectangle::new(
+                [(x, min_obs), (x, max_obs)],
+                BLUE.mix(0.3),
+            )))?;
         }
     }
 
     for (ts, is_alarm) in &input.alarms {
         if *is_alarm {
             let x = ts.timestamp() as f64;
-            chart.draw_series(std::iter::once(
-                Rectangle::new([(x - 1.0, min_obs), (x + 1.0, max_obs)], RED.mix(0.2)),
-            ))?;
+            chart.draw_series(std::iter::once(Rectangle::new(
+                [(x - 1.0, min_obs), (x + 1.0, max_obs)],
+                RED.mix(0.2),
+            )))?;
         }
     }
 

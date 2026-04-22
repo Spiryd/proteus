@@ -12,13 +12,32 @@ mod features;
 mod model;
 mod online;
 mod real_eval;
+mod reporting;
+
+/// Known direct subcommands (first arg after binary name).
+fn is_direct_command(s: &str) -> bool {
+    matches!(
+        s,
+        "run-experiment" | "run-batch" | "inspect" | "status" | "help"
+    )
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Optional: pass a config path as the first argument (defaults to "config.toml").
-    let config_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "config.toml".to_string());
-    let cfg = config::Config::from_file(&config_path)?;
-    cli::run(cfg).await
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    match args.first().map(|s| s.as_str()) {
+        // Direct subcommand mode
+        Some(cmd) if is_direct_command(cmd) => cli::run_direct(args).await,
+        // Explicit config file (interactive mode with that config)
+        Some(cfg_path) => {
+            let cfg = config::Config::from_file(cfg_path)?;
+            cli::run(cfg).await
+        }
+        // No arguments — interactive mode with default config
+        None => {
+            let cfg = config::Config::from_file("config.toml")?;
+            cli::run(cfg).await
+        }
+    }
 }

@@ -1,6 +1,6 @@
-use std::path::Path;
-use serde::Serialize;
 use crate::experiments::{ExperimentConfig, ExperimentResult};
+use serde::Serialize;
+use std::path::Path;
 
 pub fn write_json_file<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
     let data = serde_json::to_vec_pretty(value)?;

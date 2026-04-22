@@ -1,8 +1,8 @@
-use std::path::PathBuf;
-use crate::experiments::{ExperimentResult, ExperimentConfig};
 use super::artifact::RunArtifactLayout;
 use super::export::json;
 use super::table::MetricsTableBuilder;
+use crate::experiments::{ExperimentConfig, ExperimentResult};
+use std::path::PathBuf;
 
 /// Orchestrates full reporting for a single run
 pub struct RunReporter {

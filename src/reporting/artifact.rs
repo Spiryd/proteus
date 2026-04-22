@@ -1,11 +1,11 @@
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 
 /// Root directory policy for run artifacts
 pub struct ArtifactRootConfig {
     pub root_dir: PathBuf,
-    pub mode: String,           // "synthetic" | "real"
-    pub dataset_or_scenario: String,  // e.g., "scenario_calibrated" or "spy_daily"
+    pub mode: String,                // "synthetic" | "real"
+    pub dataset_or_scenario: String, // e.g., "scenario_calibrated" or "spy_daily"
 }
 
 /// Full path resolver for a single run
@@ -23,12 +23,24 @@ impl RunArtifactLayout {
         Self { run_id, root }
     }
 
-    pub fn config_dir(&self) -> PathBuf { self.root.join("config") }
-    pub fn metadata_dir(&self) -> PathBuf { self.root.join("metadata") }
-    pub fn results_dir(&self) -> PathBuf { self.root.join("results") }
-    pub fn traces_dir(&self) -> PathBuf { self.root.join("traces") }
-    pub fn plots_dir(&self) -> PathBuf { self.root.join("plots") }
-    pub fn tables_dir(&self) -> PathBuf { self.root.join("tables") }
+    pub fn config_dir(&self) -> PathBuf {
+        self.root.join("config")
+    }
+    pub fn metadata_dir(&self) -> PathBuf {
+        self.root.join("metadata")
+    }
+    pub fn results_dir(&self) -> PathBuf {
+        self.root.join("results")
+    }
+    pub fn traces_dir(&self) -> PathBuf {
+        self.root.join("traces")
+    }
+    pub fn plots_dir(&self) -> PathBuf {
+        self.root.join("plots")
+    }
+    pub fn tables_dir(&self) -> PathBuf {
+        self.root.join("tables")
+    }
 
     pub fn config_snapshot_path(&self) -> PathBuf {
         self.config_dir().join("experiment_config.json")
@@ -113,9 +125,19 @@ mod tests {
 
         let layout = RunArtifactLayout::new(&root_cfg, "run_abc123_42".to_string());
 
-        assert_eq!(layout.root, PathBuf::from("./runs/synthetic/scenario_calibrated/run_abc123_42"));
-        assert_eq!(layout.config_dir(), PathBuf::from("./runs/synthetic/scenario_calibrated/run_abc123_42/config"));
-        assert!(layout.config_snapshot_path().ends_with("experiment_config.json"));
+        assert_eq!(
+            layout.root,
+            PathBuf::from("./runs/synthetic/scenario_calibrated/run_abc123_42")
+        );
+        assert_eq!(
+            layout.config_dir(),
+            PathBuf::from("./runs/synthetic/scenario_calibrated/run_abc123_42/config")
+        );
+        assert!(
+            layout
+                .config_snapshot_path()
+                .ends_with("experiment_config.json")
+        );
         assert!(layout.alarms_csv_path().ends_with("alarms.csv"));
     }
 }

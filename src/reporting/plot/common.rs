@@ -2,7 +2,7 @@ use plotters::style::RGBColor;
 
 pub mod colors {
     use plotters::style::RGBColor;
-    
+
     pub const ALARM: RGBColor = RGBColor(255, 0, 0);
     pub const CHANGEPOINT: RGBColor = RGBColor(0, 0, 255);
     pub const OBSERVATION: RGBColor = RGBColor(100, 100, 100);

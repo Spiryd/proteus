@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricsTableRow {
@@ -36,15 +36,34 @@ impl MetricsTableBuilder {
         out.push_str("|--------|---|---|---|---|---|---|---|---|\n");
 
         for row in &self.rows {
-            let coverage_str = row.coverage.map(|v| format!("{:.3}", v)).unwrap_or_default();
-            let precision_str = row.precision.map(|v| format!("{:.3}", v)).unwrap_or_default();
-            let delay_mean_str = row.delay_mean.map(|v| format!("{:.2}", v)).unwrap_or_default();
-            let delay_median_str = row.delay_median.map(|v| format!("{:.2}", v)).unwrap_or_default();
+            let coverage_str = row
+                .coverage
+                .map(|v| format!("{:.3}", v))
+                .unwrap_or_default();
+            let precision_str = row
+                .precision
+                .map(|v| format!("{:.3}", v))
+                .unwrap_or_default();
+            let delay_mean_str = row
+                .delay_mean
+                .map(|v| format!("{:.2}", v))
+                .unwrap_or_default();
+            let delay_median_str = row
+                .delay_median
+                .map(|v| format!("{:.2}", v))
+                .unwrap_or_default();
 
             out.push_str(&format!(
                 "| {} | {} | {} | {:.2} | {} | {} | {} | {} | {} |\n",
-                row.run_id, row.scenario_or_asset, row.detector_type, row.threshold,
-                row.n_alarms, coverage_str, precision_str, delay_mean_str, delay_median_str
+                row.run_id,
+                row.scenario_or_asset,
+                row.detector_type,
+                row.threshold,
+                row.n_alarms,
+                coverage_str,
+                precision_str,
+                delay_mean_str,
+                delay_median_str
             ));
         }
 
@@ -67,8 +86,15 @@ impl MetricsTableBuilder {
 
             out.push_str(&format!(
                 "{},{},{},{},{},{},{},{},{}\n",
-                row.run_id, row.scenario_or_asset, row.detector_type, row.threshold,
-                row.n_alarms, coverage_str, precision_str, delay_mean_str, delay_median_str
+                row.run_id,
+                row.scenario_or_asset,
+                row.detector_type,
+                row.threshold,
+                row.n_alarms,
+                coverage_str,
+                precision_str,
+                delay_mean_str,
+                delay_median_str
             ));
         }
 
@@ -87,15 +113,34 @@ impl MetricsTableBuilder {
         out.push_str("\\hline\n");
 
         for row in &self.rows {
-            let coverage_str = row.coverage.map(|v| format!("{:.3}", v)).unwrap_or_else(|| "--".to_string());
-            let precision_str = row.precision.map(|v| format!("{:.3}", v)).unwrap_or_else(|| "--".to_string());
-            let delay_mean_str = row.delay_mean.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "--".to_string());
-            let delay_median_str = row.delay_median.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "--".to_string());
+            let coverage_str = row
+                .coverage
+                .map(|v| format!("{:.3}", v))
+                .unwrap_or_else(|| "--".to_string());
+            let precision_str = row
+                .precision
+                .map(|v| format!("{:.3}", v))
+                .unwrap_or_else(|| "--".to_string());
+            let delay_mean_str = row
+                .delay_mean
+                .map(|v| format!("{:.2}", v))
+                .unwrap_or_else(|| "--".to_string());
+            let delay_median_str = row
+                .delay_median
+                .map(|v| format!("{:.2}", v))
+                .unwrap_or_else(|| "--".to_string());
 
             out.push_str(&format!(
                 "{} & {} & {} & {:.2} & {} & {} & {} & {} & {} \\\\\n",
-                row.run_id, row.scenario_or_asset, row.detector_type, row.threshold,
-                row.n_alarms, coverage_str, precision_str, delay_mean_str, delay_median_str
+                row.run_id,
+                row.scenario_or_asset,
+                row.detector_type,
+                row.threshold,
+                row.n_alarms,
+                coverage_str,
+                precision_str,
+                delay_mean_str,
+                delay_median_str
             ));
         }
 

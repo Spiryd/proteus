@@ -1,7 +1,7 @@
-pub mod metrics;
 pub mod comparison;
+pub mod metrics;
 pub mod segment_summary;
 
-pub use metrics::{MetricsTableBuilder, MetricsTableRow};
 pub use comparison::ComparisonTableBuilder;
-pub use segment_summary::{SegmentSummaryTableBuilder, SegmentSummaryRow};
+pub use metrics::{MetricsTableBuilder, MetricsTableRow};
+pub use segment_summary::{SegmentSummaryRow, SegmentSummaryTableBuilder};

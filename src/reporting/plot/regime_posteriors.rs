@@ -1,7 +1,7 @@
-use plotters::prelude::*;
 use chrono::{DateTime, Utc};
+use plotters::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegimePosteriorPlotInput {
@@ -30,10 +30,7 @@ pub fn render_regime_posteriors(
         .margin(15)
         .x_label_area_size(30)
         .y_label_area_size(60)
-        .build_cartesian_2d(
-            (min_ts as f64)..(max_ts as f64),
-            0f64..1f64,
-        )?;
+        .build_cartesian_2d((min_ts as f64)..(max_ts as f64), 0f64..1f64)?;
 
     chart
         .configure_mesh()
@@ -45,13 +42,11 @@ pub fn render_regime_posteriors(
 
     for j in 0..k {
         let color = colors[j % colors.len()];
-        chart.draw_series(
-            input.posteriors.iter().enumerate().map(|(i, post_vec)| {
-                let x = input.timestamps[i].timestamp() as f64;
-                let y = post_vec.get(j).cloned().unwrap_or(0.0);
-                Circle::new((x, y), 1, color)
-            })
-        )?;
+        chart.draw_series(input.posteriors.iter().enumerate().map(|(i, post_vec)| {
+            let x = input.timestamps[i].timestamp() as f64;
+            let y = post_vec.get(j).cloned().unwrap_or(0.0);
+            Circle::new((x, y), 1, color)
+        }))?;
     }
 
     root.present()?;
