@@ -6,20 +6,30 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use super::artifact::{prepare_run_dir, snapshot_config, snapshot_result, write_json_file};
 use super::config::{DataConfig, EvaluationConfig, ExperimentConfig, ExperimentMode, TrainingMode};
 use super::result::{
-    ArtifactRef, DetectorSummary, EvaluationSummary, ExperimentResult, ModelSummary, RunMetadata,
-    RunStage, RunStatus, StageTiming,
+    ArtifactRef, DetectorSummary, EvaluationSummary, ExperimentResult, FittedParamsSummary,
+    ModelSummary, RunMetadata, RunStage, RunStatus, StageTiming,
 };
 
 #[derive(Debug, Clone)]
 pub struct DataBundle {
     pub dataset_key: String,
     pub n_observations: usize,
+    /// Actual observation sequence (empty in DryRunBackend).
+    pub observations: Vec<f64>,
+    /// Ground-truth changepoint times (1-based); None if real data or dry run.
+    pub changepoint_truth: Option<Vec<usize>>,
+    /// Number of observations belonging to the training partition.
+    pub train_n: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct FeatureBundle {
     pub feature_label: String,
     pub n_observations: usize,
+    /// Transformed observation sequence (empty in DryRunBackend).
+    pub observations: Vec<f64>,
+    /// Training partition size (mirrors DataBundle::train_n after warmup trim).
+    pub train_n: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -27,12 +37,24 @@ pub struct ModelArtifact {
     pub source: String,
     pub k_regimes: usize,
     pub diagnostics_ok: bool,
+    /// Fitted model parameters; None in DryRunBackend.
+    pub params: Option<crate::model::ModelParams>,
+    /// EM log-likelihood history (empty in DryRunBackend).
+    pub ll_history: Vec<f64>,
+    pub n_iter: usize,
+    pub converged: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct OnlineRunArtifact {
     pub n_steps: usize,
     pub n_alarms: usize,
+    /// 1-based step indices at which alarms fired (empty in DryRunBackend).
+    pub alarm_indices: Vec<usize>,
+    /// Detector score per step (empty unless save_traces = true).
+    pub score_trace: Vec<f64>,
+    /// Filtered regime posteriors per step (empty unless save_traces = true).
+    pub regime_posteriors: Vec<Vec<f64>>,
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +62,16 @@ pub struct SyntheticEvalArtifact {
     pub n_events: usize,
     pub coverage: f64,
     pub precision_like: f64,
+    // Full metric suite; None in DryRunBackend.
+    pub precision: Option<f64>,
+    pub recall: Option<f64>,
+    pub miss_rate: Option<f64>,
+    pub false_alarm_rate: Option<f64>,
+    pub delay_mean: Option<f64>,
+    pub delay_median: Option<f64>,
+    pub n_true_positive: Option<usize>,
+    pub n_false_positive: Option<usize>,
+    pub n_missed: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +127,9 @@ impl ExperimentBackend for DryRunBackend {
                 DataConfig::Real { dataset_id, .. } => format!("real:{dataset_id}"),
             },
             n_observations: n,
+            observations: vec![],
+            changepoint_truth: None,
+            train_n: (n as f64 * 0.7) as usize,
         })
     }
 
@@ -103,9 +138,12 @@ impl ExperimentBackend for DryRunBackend {
         cfg: &ExperimentConfig,
         data: &DataBundle,
     ) -> anyhow::Result<FeatureBundle> {
+        let n = data.n_observations.saturating_sub(1);
         Ok(FeatureBundle {
             feature_label: format!("{:?}", cfg.features.family),
-            n_observations: data.n_observations.saturating_sub(1),
+            n_observations: n,
+            observations: vec![],
+            train_n: (n as f64 * 0.7) as usize,
         })
     }
 
@@ -122,6 +160,10 @@ impl ExperimentBackend for DryRunBackend {
             source,
             k_regimes: cfg.model.k_regimes,
             diagnostics_ok: true,
+            params: None,
+            ll_history: vec![],
+            n_iter: 0,
+            converged: false,
         })
     }
 
@@ -138,6 +180,9 @@ impl ExperimentBackend for DryRunBackend {
         Ok(OnlineRunArtifact {
             n_steps: features.n_observations,
             n_alarms: alarms,
+            alarm_indices: vec![],
+            score_trace: vec![],
+            regime_posteriors: vec![],
         })
     }
 
@@ -156,6 +201,15 @@ impl ExperimentBackend for DryRunBackend {
             n_events: w.max(1),
             coverage,
             precision_like: 1.0 - (1.0 / (1.0 + online.n_alarms as f64)),
+            precision: None,
+            recall: None,
+            miss_rate: None,
+            false_alarm_rate: None,
+            delay_mean: None,
+            delay_median: None,
+            n_true_positive: None,
+            n_false_positive: None,
+            n_missed: None,
         })
     }
 
@@ -289,10 +343,27 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
             self.backend.train_or_load_model(&cfg, &features)
         }) {
             Ok(v) => {
+                let fitted_params = v.params.as_ref().map(|p| {
+                    let k = p.k;
+                    let transition_rows: Vec<Vec<f64>> = (0..k)
+                        .map(|i| p.transition[i * k..(i + 1) * k].to_vec())
+                        .collect();
+                    FittedParamsSummary {
+                        pi: p.pi.clone(),
+                        transition: transition_rows,
+                        means: p.means.clone(),
+                        variances: p.variances.clone(),
+                        log_likelihood: v.ll_history.last().copied().unwrap_or(f64::NAN),
+                        ll_history: v.ll_history.clone(),
+                        n_iter: v.n_iter,
+                        converged: v.converged,
+                    }
+                });
                 model_summary = Some(ModelSummary {
                     k_regimes: v.k_regimes,
                     training_mode: v.source.clone(),
                     diagnostics_ok: v.diagnostics_ok,
+                    fitted_params,
                 });
                 v
             }
@@ -320,6 +391,7 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
                     persistence_required: cfg.detector.persistence_required,
                     cooldown: cfg.detector.cooldown,
                     n_alarms: v.n_alarms,
+                    alarm_indices: v.alarm_indices.clone(),
                 });
                 v
             }
@@ -343,6 +415,15 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
                     n_events: s.n_events,
                     coverage: s.coverage,
                     precision_like: s.precision_like,
+                    precision: s.precision,
+                    recall: s.recall,
+                    miss_rate: s.miss_rate,
+                    false_alarm_rate: s.false_alarm_rate,
+                    delay_mean: s.delay_mean,
+                    delay_median: s.delay_median,
+                    n_true_positive: s.n_true_positive,
+                    n_false_positive: s.n_false_positive,
+                    n_missed: s.n_missed,
                 }
             }),
             ExperimentMode::Real => {
@@ -372,6 +453,17 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
 
         evaluation_summary = Some(eval_result);
 
+        let score_trace = if cfg.output.save_traces {
+            online.score_trace.clone()
+        } else {
+            vec![]
+        };
+        let regime_posteriors = if cfg.output.save_traces {
+            online.regime_posteriors.clone()
+        } else {
+            vec![]
+        };
+
         let mut result = ExperimentResult {
             metadata: RunMetadata {
                 run_id: run_id.clone(),
@@ -389,6 +481,8 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
             evaluation_summary,
             artifacts,
             warnings: vec![],
+            score_trace,
+            regime_posteriors,
         };
 
         let export_t0 = Instant::now();
@@ -414,6 +508,64 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
         } else {
             Ok(())
         };
+
+        // Save fitted model params as JSON for LoadFrozen reuse
+        if cfg.output.write_json {
+            if let Some(ms) = &result.model_summary {
+                if let Some(fp) = &ms.fitted_params {
+                    let params_path = run_dir.join("model_params.json");
+                    if let Ok(json) = serde_json::to_string_pretty(fp) {
+                        if let Ok(()) = std::fs::write(&params_path, json) {
+                            result.artifacts.push(ArtifactRef {
+                                name: "model_params".to_string(),
+                                path: params_path.to_string_lossy().to_string(),
+                                kind: "json".to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Export score trace and alarm list as CSV if save_traces = true
+        if cfg.output.save_traces && cfg.output.write_csv {            if !result.score_trace.is_empty() {
+                let trace_path = run_dir.join("score_trace.csv");
+                let rows: Vec<String> = result
+                    .score_trace
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("{},{:.8}", i + 1, s))
+                    .collect();
+                let content = format!("t,score\n{}", rows.join("\n"));
+                if let Ok(()) = std::fs::write(&trace_path, content) {
+                    result.artifacts.push(ArtifactRef {
+                        name: "score_trace".to_string(),
+                        path: trace_path.to_string_lossy().to_string(),
+                        kind: "csv".to_string(),
+                    });
+                }
+            }
+            if let Some(ds) = &result.detector_summary {
+                if !ds.alarm_indices.is_empty() {
+                    let alarm_path = run_dir.join("alarms.csv");
+                    let rows: Vec<String> = ds
+                        .alarm_indices
+                        .iter()
+                        .enumerate()
+                        .map(|(i, t)| format!("{},{}", i + 1, t))
+                        .collect();
+                    let content = format!("alarm_n,t\n{}", rows.join("\n"));
+                    if let Ok(()) = std::fs::write(&alarm_path, content) {
+                        result.artifacts.push(ArtifactRef {
+                            name: "alarms".to_string(),
+                            path: alarm_path.to_string_lossy().to_string(),
+                            kind: "csv".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
         result.timings.push(StageTiming {
             stage: RunStage::Export,
             duration_ms: export_t0.elapsed().as_millis(),
@@ -456,6 +608,8 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
             evaluation_summary: None,
             artifacts: vec![],
             warnings: vec![],
+            score_trace: vec![],
+            regime_posteriors: vec![],
         }
     }
 
@@ -490,6 +644,8 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
             evaluation_summary: None,
             artifacts,
             warnings: vec![message],
+            score_trace: vec![],
+            regime_posteriors: vec![],
         };
 
         if cfg.output.write_json
@@ -557,6 +713,9 @@ mod tests {
             Ok(DataBundle {
                 dataset_key: "x".to_string(),
                 n_observations: 100,
+                observations: vec![],
+                changepoint_truth: None,
+                train_n: 70,
             })
         }
         fn build_features(

@@ -9,7 +9,7 @@
 /// - `transition` → P  (K×K row-stochastic transition matrix, stored row-major)
 /// - `means`      → (μ₁,…,μ_K)
 /// - `variances`  → (σ₁²,…,σ_K²)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelParams {
     /// K — number of regimes (≥ 2).
     pub k: usize,

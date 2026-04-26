@@ -1,4 +1,4 @@
-use std::fmt;
+﻿use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,23 +8,23 @@ use crate::alphavantage::commodity::{CommodityEndpoint, Interval};
 use crate::config::Config;
 use crate::data_service::DataService;
 use crate::experiments::batch::{BatchConfig, run_batch};
-use crate::experiments::config::ExperimentConfig;
+use crate::experiments::config::{DataConfig, EvaluationConfig, ExperimentConfig, TrainingMode};
+use crate::experiments::registry;
+use crate::experiments::result::{EvaluationSummary, ExperimentResult, RunStage, RunStatus};
 use crate::experiments::runner::{DryRunBackend, ExperimentRunner};
+use crate::experiments::synthetic_backend::SyntheticBackend;
+use crate::experiments::search::{grid_search, ParamGrid, SearchPoint};
+use crate::reporting::table::{MetricsTableBuilder, MetricsTableRow};
 
 // ---------------------------------------------------------------------------
-// Top-level interactive menu
+// Top-level menu — only items that actually do something
 // ---------------------------------------------------------------------------
 
 enum MainMenu {
     Data,
-    Features,
-    Calibration,
-    Models,
-    Detection,
-    Evaluation,
     Experiments,
-    Reporting,
     InspectRuns,
+    E2eRun,
     Exit,
 }
 
@@ -32,21 +32,16 @@ impl fmt::Display for MainMenu {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             MainMenu::Data => "Data          — ingest, inspect, and refresh market data",
-            MainMenu::Features => "Features      — feature families and observation pipeline",
-            MainMenu::Calibration => "Calibration   — synthetic-to-real scenario calibration",
-            MainMenu::Models => "Models        — Gaussian MSM fitting and inspection",
-            MainMenu::Detection => "Detection     — detector variants and alarm configuration",
-            MainMenu::Evaluation => "Evaluation    — synthetic and real-data evaluation",
-            MainMenu::Experiments => "Experiments   — run single or batch experiments",
-            MainMenu::Reporting => "Reporting     — plots, tables, and artifact export",
+            MainMenu::Experiments => "Experiments   — run, search, and inspect experiments",
             MainMenu::InspectRuns => "Inspect Runs  — browse and view saved run artifacts",
+            MainMenu::E2eRun => "E2E Run       — run all registered experiments end-to-end",
             MainMenu::Exit => "Exit",
         })
     }
 }
 
 // ---------------------------------------------------------------------------
-// Data sub-menu actions
+// Data sub-menu
 // ---------------------------------------------------------------------------
 
 enum DataAction {
@@ -70,7 +65,7 @@ impl fmt::Display for DataAction {
 }
 
 // ---------------------------------------------------------------------------
-// Commodity selection helper
+// Commodity selection helpers
 // ---------------------------------------------------------------------------
 
 struct CommodityChoice(CommodityEndpoint);
@@ -117,10 +112,6 @@ fn commodity_choices() -> Vec<CommodityChoice> {
     ]
 }
 
-// ---------------------------------------------------------------------------
-// Prompt helpers — return None on Esc / Ctrl+C
-// ---------------------------------------------------------------------------
-
 fn prompt_commodity() -> anyhow::Result<Option<CommodityEndpoint>> {
     match Select::new("Select commodity:", commodity_choices())
         .without_help_message()
@@ -152,7 +143,7 @@ fn prompt_interval(endpoint: &CommodityEndpoint) -> anyhow::Result<Option<Interv
 pub async fn run(cfg: Config) -> anyhow::Result<()> {
     println!();
     println!("  Proteus — Markov-Switching Changepoint Detection Platform");
-    println!("  ─────────────────────────────────────────────────────────");
+    println!("  ---------------------------------------------------------");
     println!("  Press Esc or Ctrl+C at any prompt to go back / exit.\n");
 
     let service = DataService::new(&cfg)?;
@@ -163,14 +154,9 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             "Main menu:",
             vec![
                 MainMenu::Data,
-                MainMenu::Features,
-                MainMenu::Calibration,
-                MainMenu::Models,
-                MainMenu::Detection,
-                MainMenu::Evaluation,
                 MainMenu::Experiments,
-                MainMenu::Reporting,
                 MainMenu::InspectRuns,
+                MainMenu::E2eRun,
                 MainMenu::Exit,
             ],
         )
@@ -184,14 +170,9 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
         let result: anyhow::Result<()> = match action {
             MainMenu::Data => menu_data(&service, &cfg).await,
-            MainMenu::Features => menu_features(),
-            MainMenu::Calibration => menu_calibration(),
-            MainMenu::Models => menu_models(),
-            MainMenu::Detection => menu_detection(),
-            MainMenu::Evaluation => menu_evaluation(),
             MainMenu::Experiments => menu_experiments(),
-            MainMenu::Reporting => menu_reporting(),
             MainMenu::InspectRuns => menu_inspect_runs(),
+            MainMenu::E2eRun => cmd_e2e_run(),
             MainMenu::Exit => break,
         };
 
@@ -210,6 +191,11 @@ pub async fn run_direct(args: Vec<String>) -> anyhow::Result<()> {
     match cmd {
         "run-experiment" => direct_run_experiment(&args),
         "run-batch" => direct_run_batch(&args),
+        "e2e" => cmd_e2e_run(),
+        "param-search" => {
+            let id = flag_value(&args, "--id").unwrap_or_else(|| "surprise".to_string());
+            cmd_param_search(&id)
+        }
         "inspect" => direct_inspect(&args),
         "status" => {
             let config_path =
@@ -226,7 +212,7 @@ pub async fn run_direct(args: Vec<String>) -> anyhow::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Command handlers
+// Data commands
 // ---------------------------------------------------------------------------
 
 async fn cmd_ingest(service: &DataService, cfg: &Config) -> anyhow::Result<()> {
@@ -262,7 +248,6 @@ async fn cmd_show(service: &DataService) -> anyhow::Result<()> {
     let Some(interval) = prompt_interval(&endpoint)? else {
         return Ok(());
     };
-
     let limit_str = match Text::new("Data points to display:")
         .with_default("10")
         .prompt()
@@ -334,7 +319,6 @@ async fn cmd_refresh(service: &DataService) -> anyhow::Result<()> {
 
 async fn cmd_status(service: &DataService) -> anyhow::Result<()> {
     let statuses = service.status().await?;
-
     if statuses.is_empty() {
         println!("Cache is empty. Run Ingest to populate it.");
         return Ok(());
@@ -402,385 +386,15 @@ async fn menu_data(service: &DataService, cfg: &Config) -> anyhow::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Features sub-menu
-// ---------------------------------------------------------------------------
-
-fn menu_features() -> anyhow::Result<()> {
-    enum FeaturesAction {
-        ShowFamilies,
-        ShowConfig,
-        Back,
-    }
-    impl fmt::Display for FeaturesAction {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str(match self {
-                FeaturesAction::ShowFamilies => {
-                    "Feature Families  — show available feature transforms"
-                }
-                FeaturesAction::ShowConfig => "Config Structure  — show FeatureConfig fields",
-                FeaturesAction::Back => "<- Back",
-            })
-        }
-    }
-    loop {
-        println!();
-        let action = match Select::new(
-            "Features:",
-            vec![
-                FeaturesAction::ShowFamilies,
-                FeaturesAction::ShowConfig,
-                FeaturesAction::Back,
-            ],
-        )
-        .without_help_message()
-        .prompt()
-        {
-            Ok(a) => a,
-            Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => break,
-            Err(e) => return Err(e.into()),
-        };
-        match action {
-            FeaturesAction::ShowFamilies => {
-                println!();
-                println!("  Available Feature Families:");
-                println!("  ───────────────────────────");
-                println!("  LogReturn              — log(P_t / P_{{t-1}})");
-                println!("  AbsReturn              — |log return|");
-                println!("  SquaredReturn          — (log return)^2");
-                println!("  RollingVol             — rolling std of log returns over window w");
-                println!("  StandardizedReturn     — log return / rolling_std, session-aware");
-                println!();
-                println!("  All transforms are causal (no future leakage).");
-                println!("  Scaling options: None | ZScore | RobustZScore.");
-            }
-            FeaturesAction::ShowConfig => {
-                println!();
-                println!("  FeatureConfig JSON structure:");
-                println!("  ──────────────────────────────");
-                println!(r#"  {{"#);
-                println!(r#"    "family": "LogReturn",     // or AbsReturn, SquaredReturn"#);
-                println!(
-                    r#"    //         {{"RollingVol": {{"window": 20, "session_reset": false}}}}"#
-                );
-                println!(
-                    r#"    //         {{"StandardizedReturn": {{"window": 20, "epsilon": 1e-8, "session_reset": false}}}}"#
-                );
-                println!(r#"    "scaling": "ZScore",       // None | ZScore | RobustZScore"#);
-                println!(r#"    "session_aware": false"#);
-                println!(r#"  }}"#);
-            }
-            FeaturesAction::Back => break,
-        }
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Calibration sub-menu
-// ---------------------------------------------------------------------------
-
-fn menu_calibration() -> anyhow::Result<()> {
-    enum CalibrationAction {
-        ShowWorkflow,
-        ShowScenarios,
-        Back,
-    }
-    impl fmt::Display for CalibrationAction {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str(match self {
-                CalibrationAction::ShowWorkflow => "Calibration Workflow — steps and inputs",
-                CalibrationAction::ShowScenarios => {
-                    "Preset Scenarios     — available calibrated presets"
-                }
-                CalibrationAction::Back => "<- Back",
-            })
-        }
-    }
-    loop {
-        println!();
-        let action = match Select::new(
-            "Calibration:",
-            vec![
-                CalibrationAction::ShowWorkflow,
-                CalibrationAction::ShowScenarios,
-                CalibrationAction::Back,
-            ],
-        )
-        .without_help_message()
-        .prompt()
-        {
-            Ok(a) => a,
-            Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => break,
-            Err(e) => return Err(e.into()),
-        };
-        match action {
-            CalibrationAction::ShowWorkflow => {
-                println!();
-                println!("  Calibration Workflow:");
-                println!("  ─────────────────────");
-                println!("  1. Build feature stream from real price data");
-                println!("  2. Summarize empirical statistics (summarize_feature_stream)");
-                println!("  3. Map empirical profile to MSM params (calibrate_to_synthetic)");
-                println!("  4. Verify discrepancy (verify_calibration)");
-                println!("  5. Save CalibrationReport to JSON artifact");
-                println!();
-                println!("  Key types: CalibrationMappingConfig, MeanPolicy, VariancePolicy,");
-                println!("  JumpContamination, CalibratedSyntheticParams, CalibrationReport.");
-            }
-            CalibrationAction::ShowScenarios => {
-                println!();
-                println!("  Preset Scenario IDs:");
-                println!("  ────────────────────");
-                println!("  scenario_calibrated   — standard calibrated from real data");
-                println!("  scenario_extreme      — amplified jumps / high variance");
-                println!("  scenario_slow         — slow regime switching");
-                println!("  scenario_fast         — fast regime switching");
-                println!();
-                println!("  Reference scenario_id in ExperimentConfig.data.Synthetic.scenario_id.");
-            }
-            CalibrationAction::Back => break,
-        }
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Models sub-menu
-// ---------------------------------------------------------------------------
-
-fn menu_models() -> anyhow::Result<()> {
-    enum ModelsAction {
-        ShowEmConfig,
-        ShowArchitecture,
-        ValidateConfig,
-        Back,
-    }
-    impl fmt::Display for ModelsAction {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str(match self {
-                ModelsAction::ShowEmConfig => "EM Config         — ModelConfig fields and defaults",
-                ModelsAction::ShowArchitecture => {
-                    "MSM Architecture  — K-regime Gaussian model summary"
-                }
-                ModelsAction::ValidateConfig => {
-                    "Validate Config   — check an experiment config file"
-                }
-                ModelsAction::Back => "<- Back",
-            })
-        }
-    }
-    loop {
-        println!();
-        let action = match Select::new(
-            "Models:",
-            vec![
-                ModelsAction::ShowEmConfig,
-                ModelsAction::ShowArchitecture,
-                ModelsAction::ValidateConfig,
-                ModelsAction::Back,
-            ],
-        )
-        .without_help_message()
-        .prompt()
-        {
-            Ok(a) => a,
-            Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => break,
-            Err(e) => return Err(e.into()),
-        };
-        match action {
-            ModelsAction::ShowEmConfig => {
-                println!();
-                println!("  ModelConfig JSON structure:");
-                println!("  ───────────────────────────");
-                println!(
-                    r#"  {{"k_regimes": 2, "training": "FitOffline", "em_max_iter": 200, "em_tol": 1e-6}}"#
-                );
-                println!();
-                println!("  training options:");
-                println!(r#"    "FitOffline"                          — fit EM from data"#);
-                println!(r#"    {{"LoadFrozen": {{"artifact_id": "..."}}}}  — load saved model"#);
-            }
-            ModelsAction::ShowArchitecture => {
-                println!();
-                println!("  K-Regime Gaussian MSM:");
-                println!("  ──────────────────────");
-                println!("  Hidden state S_t in {{1,...,K}} with first-order Markov dynamics.");
-                println!("  Emission:   y_t | S_t=j ~ N(mu_j, sigma^2_j)");
-                println!("  Transition: P(S_t=j | S_{{t-1}}=i) = A_ij");
-                println!("  Fitted via EM (Baum-Welch) with multiple restarts.");
-                println!("  Online inference: causal forward filter (exact).");
-            }
-            ModelsAction::ValidateConfig => {
-                let path = match Text::new("Path to experiment config (JSON):")
-                    .with_default("experiment_config.json")
-                    .prompt()
-                {
-                    Ok(s) => s,
-                    Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
-                        continue;
-                    }
-                    Err(e) => return Err(e.into()),
-                };
-                match load_experiment_config(&path) {
-                    Ok(cfg) => match cfg.validate() {
-                        Ok(()) => {
-                            println!("\n  [ok] Config is valid.");
-                            println!("    Label    : {}", cfg.meta.run_label);
-                            println!("    Mode     : {:?}", cfg.mode);
-                            println!("    K regimes: {}", cfg.model.k_regimes);
-                        }
-                        Err(e) => eprintln!("\n  [!] Validation failed: {e}"),
-                    },
-                    Err(e) => eprintln!("\n  [!] Could not load config: {e}"),
-                }
-            }
-            ModelsAction::Back => break,
-        }
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Detection sub-menu
-// ---------------------------------------------------------------------------
-
-fn menu_detection() -> anyhow::Result<()> {
-    enum DetectionAction {
-        ShowDetectors,
-        ShowDetectorConfig,
-        Back,
-    }
-    impl fmt::Display for DetectionAction {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str(match self {
-                DetectionAction::ShowDetectors => "Detector Variants    — available detector types",
-                DetectionAction::ShowDetectorConfig => {
-                    "Detector Config      — DetectorConfig JSON structure"
-                }
-                DetectionAction::Back => "<- Back",
-            })
-        }
-    }
-    loop {
-        println!();
-        let action = match Select::new(
-            "Detection:",
-            vec![
-                DetectionAction::ShowDetectors,
-                DetectionAction::ShowDetectorConfig,
-                DetectionAction::Back,
-            ],
-        )
-        .without_help_message()
-        .prompt()
-        {
-            Ok(a) => a,
-            Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => break,
-            Err(e) => return Err(e.into()),
-        };
-        match action {
-            DetectionAction::ShowDetectors => {
-                println!();
-                println!("  Detector Variants:");
-                println!("  ──────────────────");
-                println!("  HardSwitch           — triggers on dominant regime change");
-                println!("  PosteriorTransition  — monitors posterior transition mass");
-                println!("  Surprise             — negative log predictive density");
-                println!();
-                println!("  All variants share persistence_required + cooldown controls.");
-            }
-            DetectionAction::ShowDetectorConfig => {
-                println!();
-                println!("  DetectorConfig JSON structure:");
-                println!("  ──────────────────────────────");
-                println!(r#"  {{"#);
-                println!(
-                    r#"    "detector_type": "Surprise",   // HardSwitch | PosteriorTransition | Surprise"#
-                );
-                println!(r#"    "threshold": 2.0,"#);
-                println!(r#"    "persistence_required": 1,"#);
-                println!(r#"    "cooldown": 5"#);
-                println!(r#"  }}"#);
-            }
-            DetectionAction::Back => break,
-        }
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Evaluation sub-menu
-// ---------------------------------------------------------------------------
-
-fn menu_evaluation() -> anyhow::Result<()> {
-    enum EvaluationAction {
-        ShowSynthetic,
-        ShowReal,
-        Back,
-    }
-    impl fmt::Display for EvaluationAction {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str(match self {
-                EvaluationAction::ShowSynthetic => "Synthetic Evaluation — event-window protocol",
-                EvaluationAction::ShowReal => {
-                    "Real Evaluation      — Route A (proxy) + Route B (segments)"
-                }
-                EvaluationAction::Back => "<- Back",
-            })
-        }
-    }
-    loop {
-        println!();
-        let action = match Select::new(
-            "Evaluation:",
-            vec![
-                EvaluationAction::ShowSynthetic,
-                EvaluationAction::ShowReal,
-                EvaluationAction::Back,
-            ],
-        )
-        .without_help_message()
-        .prompt()
-        {
-            Ok(a) => a,
-            Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => break,
-            Err(e) => return Err(e.into()),
-        };
-        match action {
-            EvaluationAction::ShowSynthetic => {
-                println!();
-                println!("  Synthetic Evaluation (EventMatcher protocol):");
-                println!("  ─────────────────────────────────────────────");
-                println!("  Ground truth: known changepoint positions.");
-                println!("  Each changepoint gets a detection window [t, t+w].");
-                println!("  Metrics: coverage, precision_like, delay_mean.");
-                println!("  Config: EvaluationConfig.Synthetic.matching_window.");
-            }
-            EvaluationAction::ShowReal => {
-                println!();
-                println!("  Real-data Evaluation:");
-                println!("  ─────────────────────");
-                println!("  Route A — Proxy Event Alignment:");
-                println!("    Alarm timing vs. known market events.");
-                println!("    Config: route_a_point_pre_bars, route_a_point_post_bars.");
-                println!();
-                println!("  Route B — Segmentation Self-Consistency:");
-                println!("    Within-segment homogeneity + between-segment contrast.");
-                println!("    Config: route_b_min_segment_len.");
-            }
-            EvaluationAction::Back => break,
-        }
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Experiments sub-menu
 // ---------------------------------------------------------------------------
 
 fn menu_experiments() -> anyhow::Result<()> {
     enum ExperimentsAction {
-        RunSingle,
+        ListRegistry,
+        RunFromRegistry,
+        RunAllE2E,
+        ParamSearch,
         ValidateConfig,
         ShowConfigTemplate,
         Back,
@@ -788,12 +402,23 @@ fn menu_experiments() -> anyhow::Result<()> {
     impl fmt::Display for ExperimentsAction {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.write_str(match self {
-                ExperimentsAction::RunSingle => {
-                    "Run Single Experiment   — provide config file -> dry-run"
+                ExperimentsAction::ListRegistry => {
+                    "List Registry           — show all registered experiments"
                 }
-                ExperimentsAction::ValidateConfig => "Validate Config         — check config file",
+                ExperimentsAction::RunFromRegistry => {
+                    "Run from Registry       — pick and run a registered experiment"
+                }
+                ExperimentsAction::RunAllE2E => {
+                    "Run All (E2E)           — run every registered experiment with full logging"
+                }
+                ExperimentsAction::ParamSearch => {
+                    "Parameter Search        — grid search over detector parameters"
+                }
+                ExperimentsAction::ValidateConfig => {
+                    "Validate Config File    — load and validate an experiment config file"
+                }
                 ExperimentsAction::ShowConfigTemplate => {
-                    "Show Config Template    — print example experiment config"
+                    "Show Config Template    — print an example ExperimentConfig as JSON"
                 }
                 ExperimentsAction::Back => "<- Back",
             })
@@ -804,7 +429,10 @@ fn menu_experiments() -> anyhow::Result<()> {
         let action = match Select::new(
             "Experiments:",
             vec![
-                ExperimentsAction::RunSingle,
+                ExperimentsAction::ListRegistry,
+                ExperimentsAction::RunFromRegistry,
+                ExperimentsAction::RunAllE2E,
+                ExperimentsAction::ParamSearch,
                 ExperimentsAction::ValidateConfig,
                 ExperimentsAction::ShowConfigTemplate,
                 ExperimentsAction::Back,
@@ -818,53 +446,61 @@ fn menu_experiments() -> anyhow::Result<()> {
             Err(e) => return Err(e.into()),
         };
         match action {
-            ExperimentsAction::RunSingle => {
-                let config_path = match Text::new("Path to experiment config (JSON):")
-                    .with_default("experiment_config.json")
-                    .prompt()
-                {
-                    Ok(s) => s,
-                    Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
-                        continue;
-                    }
-                    Err(e) => return Err(e.into()),
-                };
-                let cfg = match load_experiment_config(&config_path) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("\n  [!] Failed to load config: {e}");
-                        continue;
-                    }
-                };
-                if let Err(e) = cfg.validate() {
-                    eprintln!("\n  [!] Config validation failed: {e}");
-                    continue;
-                }
-                let confirmed = match Confirm::new(&format!(
-                    "Run '{}' (dry-run — backend validation only)?",
-                    cfg.meta.run_label
-                ))
-                .with_default(true)
-                .prompt()
-                {
-                    Ok(v) => v,
-                    Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
-                        continue;
-                    }
-                    Err(e) => return Err(e.into()),
-                };
-                if confirmed {
-                    println!("\n  Running '{}'...", cfg.meta.run_label);
-                    let runner = ExperimentRunner::new(DryRunBackend);
-                    let result = runner.run(cfg);
-                    println!("  Status  : {:?}", result.status);
-                    println!("  Run ID  : {}", result.metadata.run_id);
-                    println!("  Stages  : {}", result.timings.len());
-                    println!("  Warnings: {}", result.warnings.len());
+            ExperimentsAction::ListRegistry => {
+                println!();
+                println!("  Registered Experiments:");
+                println!("  -----------------------");
+                for (i, entry) in registry::registry().iter().enumerate() {
+                    println!("  [{}] {}  —  {}", i + 1, entry.id, entry.description);
                 }
             }
+            ExperimentsAction::RunFromRegistry => {
+                let reg = registry::registry();
+                let choices: Vec<String> = reg
+                    .iter()
+                    .map(|e| format!("{} — {}", e.id, e.description))
+                    .collect();
+                let idx = match Select::new("Pick experiment:", choices).prompt() {
+                    Ok(choice) => reg.iter().position(|e| choice.starts_with(e.id)).unwrap_or(0),
+                    Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
+                        continue;
+                    }
+                    Err(e) => return Err(e.into()),
+                };
+                let entry = &reg[idx];
+                let cfg = (entry.build)();
+                println!();
+                print_config_block(&cfg);
+                println!();
+                println!("  Running '{}'...", cfg.meta.run_label);
+                let runner = ExperimentRunner::new(DryRunBackend);
+                let result = runner.run(cfg.clone());
+                println!();
+                println!("  Pipeline:");
+                print_stage_log(&cfg, &result);
+                println!();
+                print_run_result_summary(&result);
+            }
+            ExperimentsAction::RunAllE2E => {
+                cmd_e2e_run()?;
+            }
+            ExperimentsAction::ParamSearch => {
+                let reg = registry::registry();
+                let choices: Vec<String> = reg
+                    .iter()
+                    .map(|e| format!("{} — {}", e.id, e.description))
+                    .collect();
+                let idx = match Select::new("Base experiment for search:", choices).prompt() {
+                    Ok(choice) => reg.iter().position(|e| choice.starts_with(e.id)).unwrap_or(0),
+                    Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
+                        continue;
+                    }
+                    Err(e) => return Err(e.into()),
+                };
+                cmd_param_search(reg[idx].id)?;
+            }
             ExperimentsAction::ValidateConfig => {
-                let config_path = match Text::new("Path to experiment config (JSON):")
+                let config_path = match Text::new("Path to experiment config (JSON or TOML):")
                     .with_default("experiment_config.json")
                     .prompt()
                 {
@@ -878,9 +514,7 @@ fn menu_experiments() -> anyhow::Result<()> {
                     Ok(cfg) => match cfg.validate() {
                         Ok(()) => {
                             println!("\n  [ok] Config is valid.");
-                            println!("    Label    : {}", cfg.meta.run_label);
-                            println!("    Mode     : {:?}", cfg.mode);
-                            println!("    K regimes: {}", cfg.model.k_regimes);
+                            print_config_block(&cfg);
                         }
                         Err(e) => eprintln!("\n  [!] Validation failed: {e}"),
                     },
@@ -892,7 +526,7 @@ fn menu_experiments() -> anyhow::Result<()> {
                 let pretty = serde_json::to_string_pretty(&tmpl).unwrap_or_default();
                 println!();
                 println!("  Experiment Config Template (JSON):");
-                println!("  ───────────────────────────────────");
+                println!("  -----------------------------------");
                 for line in pretty.lines() {
                     println!("  {line}");
                 }
@@ -904,92 +538,194 @@ fn menu_experiments() -> anyhow::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Reporting sub-menu
+// E2E run — verbose, step-by-step, with metrics table
 // ---------------------------------------------------------------------------
 
-fn menu_reporting() -> anyhow::Result<()> {
-    enum ReportingAction {
-        InspectRunArtifacts,
-        ShowPlotTypes,
-        ShowTableTypes,
-        Back,
-    }
-    impl fmt::Display for ReportingAction {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str(match self {
-                ReportingAction::InspectRunArtifacts => {
-                    "Inspect Run Artifacts  — list files in a run directory"
-                }
-                ReportingAction::ShowPlotTypes => {
-                    "Show Plot Types        — available plot renderers"
-                }
-                ReportingAction::ShowTableTypes => {
-                    "Show Table Types       — available table builders"
-                }
-                ReportingAction::Back => "<- Back",
-            })
-        }
-    }
-    loop {
+fn cmd_e2e_run() -> anyhow::Result<()> {
+    let reg = registry::registry();
+    let total = reg.len();
+
+    println!();
+    println!("  ==============================================================");
+    println!("  E2E Run — {} registered experiments", total);
+    println!("  ==============================================================");
+
+    let runner = ExperimentRunner::new(SyntheticBackend::new());
+    let mut all_results: Vec<(ExperimentConfig, ExperimentResult)> = Vec::new();
+
+    for (i, entry) in reg.iter().enumerate() {
+        let cfg = (entry.build)();
+
         println!();
-        let action = match Select::new(
-            "Reporting:",
-            vec![
-                ReportingAction::InspectRunArtifacts,
-                ReportingAction::ShowPlotTypes,
-                ReportingAction::ShowTableTypes,
-                ReportingAction::Back,
-            ],
-        )
-        .without_help_message()
-        .prompt()
-        {
-            Ok(a) => a,
-            Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => break,
-            Err(e) => return Err(e.into()),
-        };
-        match action {
-            ReportingAction::InspectRunArtifacts => {
-                let run_dir = match Text::new("Path to run directory:")
-                    .with_default("./runs")
-                    .prompt()
-                {
-                    Ok(s) => s,
-                    Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
-                        continue;
+        println!("  +-------------------------------------------------------------");
+        println!("  | [{}/{}]  {}", i + 1, total, entry.id);
+        println!("  |         {}", entry.description);
+        println!("  +-------------------------------------------------------------");
+
+        // -- Config ----------------------------------------------------------
+        println!();
+        print_config_block(&cfg);
+
+        // -- Run -------------------------------------------------------------
+        println!();
+        println!("  Pipeline:");
+        let result = runner.run(cfg.clone());
+        print_stage_log(&cfg, &result);
+
+        // -- Per-run result ---------------------------------------------------
+        println!();
+        let ok = result.is_success();
+        println!(
+            "  Result  : {}  run_id={}",
+            if ok { "SUCCESS" } else { "FAILED" },
+            result.metadata.run_id
+        );
+
+        if let Some(eval) = &result.evaluation_summary {
+            match eval {
+                EvaluationSummary::Synthetic {
+                    coverage,
+                    precision_like,
+                    n_events,
+                    precision,
+                    recall,
+                    miss_rate,
+                    false_alarm_rate,
+                    delay_mean,
+                    delay_median,
+                    ..
+                } => {
+                    let prec = precision.unwrap_or(*precision_like);
+                    let rec = recall.unwrap_or(*coverage);
+                    println!(
+                        "  Metrics : prec={:.4}  recall={:.4}  n_events={}  n_alarms={}",
+                        prec, rec, n_events,
+                        result.detector_summary.as_ref().map(|d| d.n_alarms).unwrap_or(0)
+                    );
+                    if let Some(mr) = miss_rate {
+                        println!("  Miss rate: {mr:.4}  FAR: {:.6}", false_alarm_rate.unwrap_or(0.0));
                     }
-                    Err(e) => return Err(e.into()),
-                };
-                show_artifact_tree(Path::new(&run_dir), 0);
+                    if let Some(dm) = delay_mean {
+                        println!("  Delay   : mean={dm:.1}  median={:.1}", delay_median.unwrap_or(0.0));
+                    }
+                }
+                EvaluationSummary::Real {
+                    event_coverage,
+                    alarm_relevance,
+                    segmentation_coherence,
+                } => {
+                    println!(
+                        "  Metrics : event_cov={:.4}  relevance={:.4}  coherence={:.4}",
+                        event_coverage, alarm_relevance, segmentation_coherence
+                    );
+                }
             }
-            ReportingAction::ShowPlotTypes => {
-                println!();
-                println!("  Available Plot Renderers (plotters):");
-                println!("  ─────────────────────────────────────");
-                println!("  render_signal_with_alarms    — observation series + alarm markers");
-                println!("  render_detector_scores       — score trace + threshold line");
-                println!("  render_regime_posteriors     — filtered posterior probability traces");
-                println!("  render_segmentation          — segment boundaries on real data");
-                println!(
-                    "  render_delay_distribution    — histogram of detection delays (synthetic)"
-                );
-                println!();
-                println!("  All renderers output PNG via BitMapBackend (1200x600).");
-                println!("  Use RunArtifactLayout to resolve output paths.");
+        }
+
+        // Show fitted model params if available
+        if let Some(ms) = &result.model_summary {
+            if let Some(fp) = &ms.fitted_params {
+                println!("  Model   : K={}  LL={:.4}  iter={}  converged={}", ms.k_regimes, fp.log_likelihood, fp.n_iter, fp.converged);
+                for j in 0..ms.k_regimes {
+                    println!(
+                        "  Regime {}: mu={:.6}  var={:.6}  pi={:.4}",
+                        j, fp.means[j], fp.variances[j], fp.pi[j]
+                    );
+                }
+                for i in 0..ms.k_regimes {
+                    let row: Vec<String> = fp.transition[i].iter().map(|v| format!("{v:.4}")).collect();
+                    println!("  Trans[{}]: [{}]", i, row.join(", "));
+                }
             }
-            ReportingAction::ShowTableTypes => {
-                println!();
-                println!("  Available Table Builders:");
-                println!("  ─────────────────────────");
-                println!("  MetricsTableBuilder    — coverage / precision / delay per detector");
-                println!("  ComparisonTableBuilder — side-by-side comparison across runs");
-                println!("  SegmentSummaryBuilder  — segment statistics (Route B evaluation)");
-                println!();
-                println!("  Output formats: Markdown | CSV | LaTeX.");
+        }
+
+        if !result.artifacts.is_empty() {
+            if let Some(first) = result.artifacts.first() {
+                let p = Path::new(&first.path);
+                if let Some(dir) = p.parent() {
+                    println!("  Artifacts: {}", dir.display());
+                }
             }
-            ReportingAction::Back => break,
+        }
+
+        for w in &result.warnings {
+            println!("  Warning  : {w}");
+        }
+
+        all_results.push((cfg, result));
+    }
+
+    // -- Aggregate metrics table ----------------------------------------------
+    println!();
+    println!("  ==============================================================");
+    println!("  Aggregate Metrics");
+    println!("  ==============================================================");
+
+    let results_only: Vec<&ExperimentResult> = all_results.iter().map(|(_, r)| r).collect();
+    let table_md = build_metrics_table(&results_only);
+
+    if !table_md.is_empty() {
+        println!();
+        for line in table_md.lines() {
+            println!("  {line}");
+        }
+        if let Err(e) = fs::create_dir_all("./runs") {
+            eprintln!("  [!] Could not create ./runs: {e}");
+        } else {
+            let table_path = PathBuf::from("./runs/metrics_table.md");
+            match fs::write(&table_path, &table_md) {
+                Ok(_) => println!("\n  Metrics table written to: {}", table_path.display()),
+                Err(e) => eprintln!("  [!] Could not write metrics table: {e}"),
+            }
         }
     }
+
+    let n_success = all_results.iter().filter(|(_, r)| r.is_success()).count();
+    let n_failed = all_results.len() - n_success;
+    println!();
+    println!("  Completed: {}  Failed: {}", n_success, n_failed);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Parameter search
+// ---------------------------------------------------------------------------
+
+fn cmd_param_search(experiment_id: &str) -> anyhow::Result<()> {
+    let reg = registry::registry();
+    let entry = reg.iter().find(|e| e.id == experiment_id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Unknown experiment id '{}'. Known: {}",
+            experiment_id,
+            reg.iter().map(|e| e.id).collect::<Vec<_>>().join(", ")
+        )
+    })?;
+
+    let base = (entry.build)();
+    let grid = ParamGrid::default();
+
+    println!();
+    println!("  Parameter Search — base: {}", entry.id);
+    println!("  --------------------------------------------------------------");
+    println!("  Detector   : {:?}", base.detector.detector_type);
+    println!(
+        "  Grid size  : {} points ({} thresholds x {} persistence x {} cooldown)",
+        grid.n_points(),
+        grid.thresholds.len(),
+        grid.persistence_values.len(),
+        grid.cooldown_values.len()
+    );
+    println!("  Thresholds : {:?}", grid.thresholds);
+    println!("  Persistence: {:?}", grid.persistence_values);
+    println!("  Cooldown   : {:?}", grid.cooldown_values);
+    println!();
+    println!("  Running {} evaluations...", grid.n_points());
+
+    let runner = ExperimentRunner::new(DryRunBackend);
+    let results = grid_search(&runner, &base, &grid);
+
+    println!();
+    print_search_results(&results, results.len());
     Ok(())
 }
 
@@ -1000,7 +736,7 @@ fn menu_reporting() -> anyhow::Result<()> {
 fn menu_inspect_runs() -> anyhow::Result<()> {
     enum InspectAction {
         ListRuns,
-        ViewRunSummary,
+        ViewResult,
         ViewConfigSnapshot,
         ViewArtifactTree,
         Back,
@@ -1009,11 +745,13 @@ fn menu_inspect_runs() -> anyhow::Result<()> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.write_str(match self {
                 InspectAction::ListRuns => "List Runs           — show all saved runs",
-                InspectAction::ViewRunSummary => "View Run Summary    — view run metadata JSON",
+                InspectAction::ViewResult => "View Result         — show result.json for a run",
                 InspectAction::ViewConfigSnapshot => {
-                    "View Config         — view experiment config snapshot"
+                    "View Config         — show config.snapshot.json for a run"
                 }
-                InspectAction::ViewArtifactTree => "View Artifact Tree  — show all files in a run",
+                InspectAction::ViewArtifactTree => {
+                    "View Artifact Tree  — show all files in a run directory"
+                }
                 InspectAction::Back => "<- Back",
             })
         }
@@ -1024,7 +762,7 @@ fn menu_inspect_runs() -> anyhow::Result<()> {
             "Inspect Runs:",
             vec![
                 InspectAction::ListRuns,
-                InspectAction::ViewRunSummary,
+                InspectAction::ViewResult,
                 InspectAction::ViewConfigSnapshot,
                 InspectAction::ViewArtifactTree,
                 InspectAction::Back,
@@ -1042,14 +780,14 @@ fn menu_inspect_runs() -> anyhow::Result<()> {
                 let runs_base = Path::new("./runs");
                 if !runs_base.exists() {
                     println!(
-                        "\n  No ./runs directory found. Runs are created by executing experiments."
+                        "\n  No ./runs directory found. Run experiments first to create run artifacts."
                     );
                     continue;
                 }
                 let mut count = 0usize;
                 println!();
                 println!("  Saved Runs (./runs):");
-                println!("  ────────────────────");
+                println!("  --------------------");
                 list_runs_recursive(runs_base, &mut count);
                 if count == 0 {
                     println!("  (no runs found)");
@@ -1057,7 +795,7 @@ fn menu_inspect_runs() -> anyhow::Result<()> {
                     println!("\n  Total: {count} run(s)");
                 }
             }
-            InspectAction::ViewRunSummary => {
+            InspectAction::ViewResult => {
                 let run_dir = match Text::new("Run directory path:").prompt() {
                     Ok(s) => s,
                     Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
@@ -1065,9 +803,7 @@ fn menu_inspect_runs() -> anyhow::Result<()> {
                     }
                     Err(e) => return Err(e.into()),
                 };
-                let path = PathBuf::from(&run_dir)
-                    .join("metadata")
-                    .join("run_metadata.json");
+                let path = PathBuf::from(&run_dir).join("result.json");
                 show_json_file(&path);
             }
             InspectAction::ViewConfigSnapshot => {
@@ -1078,9 +814,7 @@ fn menu_inspect_runs() -> anyhow::Result<()> {
                     }
                     Err(e) => return Err(e.into()),
                 };
-                let path = PathBuf::from(&run_dir)
-                    .join("config")
-                    .join("experiment_config.json");
+                let path = PathBuf::from(&run_dir).join("config.snapshot.json");
                 show_json_file(&path);
             }
             InspectAction::ViewArtifactTree => {
@@ -1109,12 +843,17 @@ fn direct_run_experiment(args: &[String]) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Usage: run-experiment --config <path.json>"))?;
     let cfg = load_experiment_config(&config_path)?;
     cfg.validate()?;
-    println!("Running experiment '{}' ...", cfg.meta.run_label);
+    println!();
+    print_config_block(&cfg);
+    println!();
+    println!("Running '{}'...", cfg.meta.run_label);
     let runner = ExperimentRunner::new(DryRunBackend);
-    let result = runner.run(cfg);
-    println!("Status   : {:?}", result.status);
-    println!("Run ID   : {}", result.metadata.run_id);
-    println!("Warnings : {}", result.warnings.len());
+    let result = runner.run(cfg.clone());
+    println!();
+    println!("Pipeline:");
+    print_stage_log(&cfg, &result);
+    println!();
+    print_run_result_summary(&result);
     Ok(())
 }
 
@@ -1135,10 +874,17 @@ fn direct_run_batch(args: &[String]) -> anyhow::Result<()> {
         runs: configs,
         stop_on_error,
     };
-    println!("Running batch of {} experiments ...", batch_cfg.runs.len());
-    let result = run_batch(&runner, batch_cfg);
-    println!("Completed: {}", result.n_success);
-    println!("Failed   : {}", result.n_failed);
+    println!("Running batch of {} experiments...", batch_cfg.runs.len());
+    let batch = run_batch(&runner, batch_cfg);
+    println!("Completed: {}  Failed: {}", batch.n_success, batch.n_failed);
+    let results_only: Vec<&ExperimentResult> = batch.run_results.iter().collect();
+    let table_md = build_metrics_table(&results_only);
+    if !table_md.is_empty() {
+        println!();
+        for line in table_md.lines() {
+            println!("{line}");
+        }
+    }
     Ok(())
 }
 
@@ -1158,16 +904,341 @@ fn print_help() {
     println!("Proteus — Markov-Switching Changepoint Detection Platform");
     println!();
     println!("USAGE:");
-    println!("  cargo run                             # interactive mode (default)");
+    println!("  cargo run                             # interactive menu");
     println!("  cargo run -- <config.toml>            # interactive, specific config");
-    println!("  cargo run -- <subcommand> [options]   # direct command mode");
+    println!("  cargo run -- <subcommand> [options]   # direct command");
     println!();
     println!("SUBCOMMANDS:");
-    println!("  run-experiment  --config <path.json>         Run single experiment");
-    println!("  run-batch       --config a.json --config b.json  Run batch");
+    println!("  e2e                                          Run all registered experiments (verbose)");
+    println!("  param-search  [--id <experiment_id>]         Grid search over detector params");
+    println!("  run-experiment  --config <path.json>         Run single experiment from file");
+    println!("  run-batch       --config a.json [...]        Run batch from files");
     println!("  inspect         --dir <run-directory>        Inspect run artifacts");
     println!("  status          [--config <path.toml>]       Show data cache status");
     println!("  help                                         Show this message");
+}
+
+// ---------------------------------------------------------------------------
+// Rendering helpers
+// ---------------------------------------------------------------------------
+
+fn print_config_block(cfg: &ExperimentConfig) {
+    let training_str = match &cfg.model.training {
+        TrainingMode::FitOffline => "FitOffline".to_string(),
+        TrainingMode::LoadFrozen { artifact_id } => format!("LoadFrozen:{}", artifact_id),
+    };
+    println!("  Config:");
+    println!("    Label      : {}", cfg.meta.run_label);
+    println!("    Mode       : {:?}", cfg.mode);
+    match &cfg.data {
+        DataConfig::Synthetic {
+            scenario_id,
+            horizon,
+            ..
+        } => {
+            println!(
+                "    Data       : Synthetic  scenario={}  horizon={}",
+                scenario_id, horizon
+            );
+        }
+        DataConfig::Real {
+            asset,
+            frequency,
+            dataset_id,
+            ..
+        } => {
+            println!(
+                "    Data       : Real  asset={}  {:?}  dataset={}",
+                asset, frequency, dataset_id
+            );
+        }
+    }
+    println!(
+        "    Feature    : {:?}  scaling={:?}  session_aware={}",
+        cfg.features.family, cfg.features.scaling, cfg.features.session_aware
+    );
+    println!(
+        "    Model      : K={}  {}  em_max_iter={}  tol={}",
+        cfg.model.k_regimes, training_str, cfg.model.em_max_iter, cfg.model.em_tol
+    );
+    println!(
+        "    Detector   : {:?}  threshold={}  persistence={}  cooldown={}",
+        cfg.detector.detector_type,
+        cfg.detector.threshold,
+        cfg.detector.persistence_required,
+        cfg.detector.cooldown
+    );
+    match &cfg.evaluation {
+        EvaluationConfig::Synthetic { matching_window } => {
+            println!(
+                "    Evaluation : Synthetic  matching_window={}",
+                matching_window
+            );
+        }
+        EvaluationConfig::Real {
+            route_a_point_pre_bars,
+            route_a_point_post_bars,
+            route_b_min_segment_len,
+            ..
+        } => {
+            println!(
+                "    Evaluation : Real  route_a=[{},{})  route_b_min_seg={}",
+                route_a_point_pre_bars, route_a_point_post_bars, route_b_min_segment_len
+            );
+        }
+    }
+    if let Some(seed) = cfg.reproducibility.seed {
+        println!(
+            "    Seed       : {}  output={}",
+            seed, cfg.output.root_dir
+        );
+    } else {
+        println!("    Seed       : (none)  output={}", cfg.output.root_dir);
+    }
+}
+
+fn print_stage_log(cfg: &ExperimentConfig, result: &ExperimentResult) {
+    let n_stages = result.timings.len();
+    for (i, timing) in result.timings.iter().enumerate() {
+        let failed = if let RunStatus::Failed {
+            stage: ref fs, ..
+        } = result.status
+        {
+            *fs == timing.stage
+        } else {
+            false
+        };
+        let marker = if failed { "x" } else { "v" };
+
+        let detail = match &timing.stage {
+            RunStage::ResolveData => match &cfg.data {
+                DataConfig::Synthetic {
+                    scenario_id,
+                    horizon,
+                    ..
+                } => format!("dataset=synthetic:{}  n={}", scenario_id, horizon),
+                DataConfig::Real { dataset_id, .. } => format!("dataset=real:{}", dataset_id),
+            },
+            RunStage::BuildFeatures => {
+                let n = match &cfg.data {
+                    DataConfig::Synthetic { horizon, .. } => horizon.saturating_sub(1),
+                    DataConfig::Real { .. } => 0,
+                };
+                format!(
+                    "feature={:?}  scaling={:?}  n={}",
+                    cfg.features.family, cfg.features.scaling, n
+                )
+            }
+            RunStage::TrainOrLoadModel => result
+                .model_summary
+                .as_ref()
+                .map(|ms| {
+                    let base = format!(
+                        "source={}  K={}  diagnostics={}",
+                        ms.training_mode,
+                        ms.k_regimes,
+                        if ms.diagnostics_ok { "ok" } else { "FAIL" }
+                    );
+                    if let Some(fp) = &ms.fitted_params {
+                        format!(
+                            "{}  LL={:.2}  iter={}  converged={}",
+                            base,
+                            fp.log_likelihood,
+                            fp.n_iter,
+                            fp.converged
+                        )
+                    } else {
+                        base
+                    }
+                })
+                .unwrap_or_default(),
+            RunStage::RunOnline => {
+                let n_steps = match &cfg.data {
+                    DataConfig::Synthetic { horizon, .. } => horizon.saturating_sub(1),
+                    DataConfig::Real { .. } => 0,
+                };
+                result
+                    .detector_summary
+                    .as_ref()
+                    .map(|ds| format!("n_steps={}  n_alarms={}", n_steps, ds.n_alarms))
+                    .unwrap_or_default()
+            }
+            RunStage::Evaluate => match &result.evaluation_summary {
+                Some(EvaluationSummary::Synthetic {
+                    coverage,
+                    precision_like,
+                    n_events,
+                    recall,
+                    precision,
+                    ..
+                }) => {
+                    let prec = precision.map(|p| format!("{p:.4}")).unwrap_or_else(|| format!("{precision_like:.4}"));
+                    let rec = recall.map(|r| format!("{r:.4}")).unwrap_or_else(|| format!("{coverage:.4}"));
+                    format!("precision={prec}  recall={rec}  n_events={n_events}")
+                }
+                Some(EvaluationSummary::Real {
+                    event_coverage,
+                    alarm_relevance,
+                    segmentation_coherence,
+                }) => format!(
+                    "event_cov={:.4}  relevance={:.4}  coherence={:.4}",
+                    event_coverage, alarm_relevance, segmentation_coherence
+                ),
+                None => String::new(),
+            },
+            RunStage::Export => format!("artifacts={}", result.artifacts.len()),
+        };
+
+        println!(
+            "    [{}/{}] [{}] {:<20} {}  ({}ms)",
+            i + 1,
+            n_stages,
+            marker,
+            format!("{:?}", timing.stage),
+            detail,
+            timing.duration_ms
+        );
+    }
+    for w in &result.warnings {
+        println!("    [!] Warning: {w}");
+    }
+}
+
+fn print_run_result_summary(result: &ExperimentResult) {
+    let ok = result.is_success();
+    println!(
+        "  Result   : {}  run_id={}",
+        if ok { "SUCCESS" } else { "FAILED" },
+        result.metadata.run_id
+    );
+    if let Some(eval) = &result.evaluation_summary {
+        match eval {
+            EvaluationSummary::Synthetic {
+                coverage,
+                precision_like,
+                n_events,
+                precision,
+                recall,
+                miss_rate,
+                false_alarm_rate,
+                delay_mean,
+                delay_median,
+                ..
+            } => {
+                let prec = precision.unwrap_or(*precision_like);
+                let rec = recall.unwrap_or(*coverage);
+                println!(
+                    "  Metrics  : prec={:.4}  recall={:.4}  n_events={}  n_alarms={}",
+                    prec, rec, n_events,
+                    result.detector_summary.as_ref().map(|d| d.n_alarms).unwrap_or(0)
+                );
+                if let Some(mr) = miss_rate {
+                    println!("  Miss rate: {mr:.4}  FAR: {:.6}", false_alarm_rate.unwrap_or(0.0));
+                }
+                if let Some(dm) = delay_mean {
+                    println!("  Delay    : mean={dm:.1}  median={:.1}", delay_median.unwrap_or(0.0));
+                }
+            }
+            EvaluationSummary::Real {
+                event_coverage,
+                alarm_relevance,
+                segmentation_coherence,
+            } => {
+                println!(
+                    "  Metrics  : event_cov={:.4}  relevance={:.4}  coherence={:.4}",
+                    event_coverage, alarm_relevance, segmentation_coherence
+                );
+            }
+        }
+    }
+    if !result.warnings.is_empty() {
+        println!("  Warnings : {}", result.warnings.len());
+    }
+}
+
+fn build_metrics_table(results: &[&ExperimentResult]) -> String {
+    let mut builder = MetricsTableBuilder::new();
+    for result in results {
+        let (coverage, precision, delay_mean_val, delay_median_val, n_alarms) = match &result.evaluation_summary {
+            Some(EvaluationSummary::Synthetic {
+                coverage,
+                precision_like,
+                precision,
+                recall,
+                delay_mean,
+                delay_median,
+                ..
+            }) => (
+                Some(recall.unwrap_or(*coverage)),
+                Some(precision.unwrap_or(*precision_like)),
+                *delay_mean,
+                *delay_median,
+                result.detector_summary.as_ref().map(|d| d.n_alarms).unwrap_or(0),
+            ),
+            Some(EvaluationSummary::Real {
+                event_coverage,
+                alarm_relevance,
+                ..
+            }) => (
+                Some(*event_coverage),
+                Some(*alarm_relevance),
+                None,
+                None,
+                result.detector_summary.as_ref().map(|d| d.n_alarms).unwrap_or(0),
+            ),
+            None => (None, None, None, None, 0),
+        };
+        let (detector_type, threshold) = result
+            .detector_summary
+            .as_ref()
+            .map(|d| (d.detector_type.clone(), d.threshold))
+            .unwrap_or_else(|| ("unknown".to_string(), 0.0));
+        builder.add_row(MetricsTableRow {
+            run_id: result.metadata.run_id.clone(),
+            scenario_or_asset: result.metadata.run_label.clone(),
+            detector_type,
+            threshold,
+            n_alarms,
+            coverage,
+            precision,
+            delay_mean: delay_mean_val,
+            delay_median: delay_median_val,
+        });
+    }
+    builder.to_markdown()
+}
+
+fn print_search_results(results: &[SearchPoint], top_n: usize) {
+    let show = top_n.min(results.len());
+    println!(
+        "  Top {} / {} grid points (sorted by score descending):",
+        show,
+        results.len()
+    );
+    println!();
+    println!(
+        "  {:<8} {:<12} {:<12} {:<10} {:<10} {:<10}",
+        "Score", "Threshold", "Persistence", "Cooldown", "Coverage", "Precision"
+    );
+    println!("  {}", "-".repeat(64));
+    for pt in results.iter().take(show) {
+        println!(
+            "  {:<8.4} {:<12.3} {:<12} {:<10} {:<10.4} {:<10.4}",
+            pt.score,
+            pt.threshold,
+            pt.persistence_required,
+            pt.cooldown,
+            pt.coverage,
+            pt.precision_like
+        );
+    }
+    if let Some(best) = results.first() {
+        println!();
+        println!(
+            "  Best: threshold={:.3}  persistence={}  cooldown={}  score={:.4}",
+            best.threshold, best.persistence_required, best.cooldown, best.score
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1206,7 +1277,10 @@ fn show_json_file(path: &Path) {
                 .unwrap_or(content);
             println!();
             println!("  {}:", path.display());
-            println!("  {}", "-".repeat(60.min(path.to_string_lossy().len() + 1)));
+            println!(
+                "  {}",
+                "-".repeat(60.min(path.to_string_lossy().len() + 1))
+            );
             for line in display.lines().take(60) {
                 println!("  {line}");
             }
@@ -1248,10 +1322,19 @@ fn list_runs_recursive(path: &Path, count: &mut usize) {
     if !path.is_dir() {
         return;
     }
-    // A "run" directory contains a "metadata" subdirectory.
-    if path.join("metadata").is_dir() {
+    if path.join("result.json").exists() {
         *count += 1;
-        println!("  [{}] {}", count, path.display());
+        let info = fs::read_to_string(path.join("result.json"))
+            .ok()
+            .and_then(|s| {
+                let v: serde_json::Value = serde_json::from_str(&s).ok()?;
+                let label = v["metadata"]["run_label"].as_str()?.to_string();
+                let mode = v["metadata"]["mode"].as_str()?.to_string();
+                let status = v["status"].as_str()?.to_string();
+                Some(format!("{label}  [{mode}]  {status}"))
+            })
+            .unwrap_or_else(|| path.display().to_string());
+        println!("  [{}] {}", count, info);
         return;
     }
     if let Ok(mut entries) = fs::read_dir(path) {

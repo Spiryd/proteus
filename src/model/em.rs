@@ -115,7 +115,7 @@ impl Default for EmConfig {
 // ---------------------------------------------------------------------------
 
 /// The output of a completed EM estimation run.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EmResult {
     /// Fitted model parameters Θ̂.
     pub params: ModelParams,

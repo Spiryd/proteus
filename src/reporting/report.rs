@@ -1,7 +1,7 @@
 use super::artifact::RunArtifactLayout;
 use super::export::json;
-use super::table::MetricsTableBuilder;
-use crate::experiments::{ExperimentConfig, ExperimentResult};
+use super::table::{MetricsTableBuilder, MetricsTableRow};
+use crate::experiments::{EvaluationSummary, ExperimentConfig, ExperimentResult};
 use std::path::PathBuf;
 
 /// Orchestrates full reporting for a single run
@@ -38,18 +38,67 @@ impl RunReporter {
         Ok(())
     }
 
-    /// Generate all plots for the run
-    pub fn generate_plots(&self) -> anyhow::Result<()> {
-        // Load traces from CSV files
-        // For each plot type, construct input and render
-        // This is data-driven from the exported traces
+    /// Generate all tables for the run (metrics.md / metrics.csv / metrics.tex)
+    pub fn generate_tables(&self, result: &ExperimentResult) -> anyhow::Result<()> {
+        let run_dir = &self.artifact_layout.root;
+
+        let mut builder = MetricsTableBuilder::new();
+        let n_alarms = result.detector_summary.as_ref().map(|d| d.n_alarms).unwrap_or(0);
+        let (detector_type, threshold) = result
+            .detector_summary
+            .as_ref()
+            .map(|d| (d.detector_type.clone(), d.threshold))
+            .unwrap_or_else(|| ("unknown".to_string(), 0.0));
+
+        let (coverage, precision, delay_mean, delay_median) =
+            match &result.evaluation_summary {
+                Some(EvaluationSummary::Synthetic {
+                    coverage,
+                    precision_like,
+                    precision,
+                    recall,
+                    delay_mean,
+                    delay_median,
+                    ..
+                }) => (
+                    Some(recall.unwrap_or(*coverage)),
+                    Some(precision.unwrap_or(*precision_like)),
+                    *delay_mean,
+                    *delay_median,
+                ),
+                Some(EvaluationSummary::Real {
+                    event_coverage,
+                    alarm_relevance,
+                    ..
+                }) => (Some(*event_coverage), Some(*alarm_relevance), None, None),
+                None => (None, None, None, None),
+            };
+
+        builder.add_row(MetricsTableRow {
+            run_id: result.metadata.run_id.clone(),
+            scenario_or_asset: result.metadata.run_label.clone(),
+            detector_type,
+            threshold,
+            n_alarms,
+            coverage,
+            precision,
+            delay_mean,
+            delay_median,
+        });
+
+        let md = builder.to_markdown();
+        let csv = builder.to_csv();
+        let tex = builder.to_latex();
+
+        std::fs::write(run_dir.join("metrics.md"), &md)?;
+        std::fs::write(run_dir.join("metrics.csv"), &csv)?;
+        std::fs::write(run_dir.join("metrics.tex"), &tex)?;
+
         Ok(())
     }
 
-    /// Generate all tables for the run
-    pub fn generate_tables(&self, _result: &ExperimentResult) -> anyhow::Result<()> {
-        // Build metrics table from result
-        // Write to markdown, CSV, and LaTeX
+    /// Generate all plots for the run (stub — plotters integration pending)
+    pub fn generate_plots(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }

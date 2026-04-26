@@ -197,11 +197,11 @@ Every run produces artifacts in several families. Each family serves a distinct 
 - Delay distribution (synthetic only, PNG/PDF): histogram of detection delays or false alarm times.
 
 **File examples:**
-- `plot_signal_with_alarms.png`
-- `plot_detector_scores.png`
-- `plot_regime_posteriors.png`
-- `plot_segmentation.png`
-- `plot_delay_distribution.png`
+- `signal_with_alarms.png`
+- `detector_scores.png`
+- `regime_posteriors.png`
+- `segmentation.png`
+- `delay_distribution.png`
 
 **Why:** These enable figure inclusion in thesis chapters and rapid visual inspection.
 
@@ -213,7 +213,7 @@ Every run produces artifacts in several families. Each family serves a distinct 
 - Aggregate comparison table (CSV/Markdown): metrics across detector variants, allowing export to thesis.
 
 **File examples:**
-- `metrics_table.md`
+- `metrics.md` / `metrics.csv` / `metrics.tex`
 - `comparison_table.csv`
 
 **Why:** These reduce manual work in thesis preparation.
@@ -266,39 +266,25 @@ runs/
 For a given run, the artifact structure is:
 
 ```
-run_<config_hash>_<seed>/
+run_<config_hash_hex16>_<seed>/
 ├── config/
-│   ├── experiment_config.json
-│   ├── data_config.json
-│   └── detector_config.json
+│   └── experiment_config.json    — full config snapshot
 ├── metadata/
-│   ├── run_metadata.json
-│   ├── git_info.json
-│   └── execution_log.txt
-├── results/
-│   ├── model_summary.json
-│   ├── detector_summary.json
-│   ├── evaluation_summary.json
-│   └── metrics.json
-├── traces/
-│   ├── feature_trace.csv
-│   ├── score_trace.csv
-│   ├── regime_posterior.csv
-│   ├── alarms.csv
-│   ├── matched_events.csv (synthetic only)
-│   ├── proxy_events.csv (real Route A only)
-│   └── segments.csv (real Route B only)
-├── plots/
-│   ├── signal_with_alarms.png
-│   ├── detector_scores.png
-│   ├── regime_posteriors.png
-│   ├── segmentation.png (real only)
-│   ├── delay_distribution.png (synthetic only)
-│   └── proxy_event_alignment.png (real Route A only)
-└── tables/
-    ├── metrics_table.md
-    ├── metrics_table.tex (optional LaTeX)
-    └── segment_summary.csv (real only)
+│   ├── run_metadata.json          — run ID, label, timestamps, seed, hash
+│   └── result.json                — full ExperimentResult
+├── model_params.json              — FittedParamsSummary (π, P, means, vars, LL history)
+├── summary.json                   — EvaluationSummary only
+├── score_trace.csv                — per-step detector score (if save_traces + write_csv)
+├── alarms.csv                     — alarm step indices (if save_traces + write_csv)
+├── metrics.md                     — per-run metrics table (Markdown)
+├── metrics.csv                    — per-run metrics table (CSV)
+├── metrics.tex                    — per-run metrics table (LaTeX)
+└── plots/
+    ├── signal_with_alarms.png     — pending
+    ├── detector_scores.png        — pending
+    ├── regime_posteriors.png      — pending
+    ├── delay_distribution.png     — pending (synthetic only)
+    └── segmentation.png           — pending (real only)
 ```
 
 ### 5.3 Design Rationale

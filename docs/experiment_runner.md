@@ -36,7 +36,13 @@ No hidden parameter edits are allowed between runs.
 
 ## 3. Configuration Semantics
 
-A complete config must include seven categories.
+A complete config includes nine categories.
+
+### 3.0 Meta config
+
+Identifies the run for logging and artifact naming:
+- run label (human-readable name),
+- optional notes.
 
 ### 3.1 Data config
 
@@ -109,10 +115,13 @@ A complete result must include:
    - evaluation,
    - export.
 3. Summaries:
-   - model summary,
-   - detector summary,
-   - evaluation summary (synthetic or real).
-4. Artifact references:
+   - model summary (includes fitted params: π, P, means, variances, LL history, n_iter, converged),
+   - detector summary (includes alarm indices),
+   - evaluation summary (synthetic or real, includes full MetricSuite: precision, recall, miss rate, FAR, delay mean + median).
+4. Trace data (populated only when `save_traces = true`):
+   - score trace (per-step detector score),
+   - regime posteriors (T × K filtered probabilities).
+5. Artifact references:
    - config snapshot,
    - run result,
    - summary files.

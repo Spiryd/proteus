@@ -21,3 +21,6 @@ config.toml
 
 # Local database file storing cached data
 /data
+
+# Directory for experiment runs, which may contain large files and should not be committed
+/runs

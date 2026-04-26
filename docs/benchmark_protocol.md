@@ -282,7 +282,7 @@ Summary statistics computed for each metric:
 | Precision | mean, median over runs with $N > 0$ |
 | Miss rate | mean, median over runs with $M > 0$ |
 | FAR | mean, median over all runs |
-| Mean delay | mean, median over runs with at least one detection |
+| Detection delay | mean and median over runs with at least one detection |
 | RFFA | mean, median over runs with at least one false alarm |
 | Mean step time | mean, median over timed runs |
 

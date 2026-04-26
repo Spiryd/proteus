@@ -1,33 +1,49 @@
 # Interactive CLI
 
-Proteus uses a fully interactive terminal UI powered by [inquire](https://github.com/mikaelmello/inquire). There are no command-line flags — everything is driven by arrow-key menus, confirms, and text inputs.
+Proteus supports two modes:
+- **Interactive mode**: fully arrow-key driven menus powered by [inquire](https://github.com/mikaelmello/inquire).
+- **Direct CLI mode**: subcommand-based, useful for scripting and reproducibility.
 
 ## Starting the app
 
 ```
-cargo run
+cargo run              # interactive menu
+cargo run -- e2e       # run all registered experiments end-to-end
+cargo run -- param-search --id <experiment_id>
+cargo run -- run-experiment --config experiment_config.json
+cargo run -- run-batch --config a.json --config b.json
+cargo run -- inspect --dir ./runs/synthetic/my_run/run_001
+cargo run -- status
+cargo run -- help
 ```
 
-An optional config path can be passed as the first argument (defaults to `config.toml`):
-
-```
-cargo run -- path/to/other.toml
-```
-
-## Main menu
+## Main menu (interactive mode)
 
 ```
 ? What would you like to do?
-> Ingest    — fetch & cache configured series
-  Show      — view cached data for a series
-  Refresh   — force-refresh a series from the API
-  Status    — cache overview
-  Quit
+> Data          — ingest, inspect, and refresh market data
+  Experiments   — run, search, and inspect experiments
+  Inspect Runs  — browse and view saved run artifacts
+  E2E Run       — run all registered experiments end-to-end
+  Exit
 ```
 
 Navigate with the arrow keys, confirm with Enter. Press **Esc** or **Ctrl+C** at any prompt to cancel back to the main menu.
 
-## Actions
+## Data sub-menu
+
+Selecting **Data** opens the data actions menu:
+
+```
+? Data action:
+> Ingest    — fetch & cache configured series
+  Show      — view cached data for a series
+  Refresh   — force-refresh a series from the API
+  Status    — cache overview
+  Back
+```
+
+## Data Actions
 
 ### Ingest
 
