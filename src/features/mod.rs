@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 /// Feature engineering and observation design for real financial data.
 ///
 /// # Phase 16 — Observation Design

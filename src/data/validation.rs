@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Chronology validation and data-quality reporting for market time series.
 ///
 /// # Validation pipeline

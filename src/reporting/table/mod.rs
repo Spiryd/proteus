@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 pub mod comparison;
 pub mod metrics;
 pub mod segment_summary;

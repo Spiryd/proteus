@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use plotters::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;

@@ -1,30 +1,31 @@
-/// Observation-family configuration for the financial feature pipeline.
-///
-/// # The central design decision
-///
-/// The Markov Switching Model assumes
-///
-/// ```text
-/// y_t | S_t = j  ~  N(μ_j, σ_j²)
-/// ```
-///
-/// but the model says nothing about what `y_t` *is*.  For real market data,
-/// `y_t` is an observation-design choice.  This module enumerates the
-/// supported families and their configuration parameters.
-///
-/// # Family taxonomy
-///
-/// | Family | Symbol | Detector is sensitive to … |
-/// |---|---|---|
-/// | `LogReturn` | $r_t$ | changes in return distribution (mean, dispersion) |
-/// | `AbsReturn` | $\|r_t\|$ | changes in return magnitude / activity |
-/// | `SquaredReturn` | $r_t^2$ | changes in second-moment structure |
-/// | `RollingVol` | $v_t^{(w)}$ | changes in recent rolling volatility level |
-/// | `StandardizedReturn` | $z_t$ | changes in normalized shock size |
-///
-/// The choice of family is part of the scientific hypothesis:
-/// returning to a null-model where raw prices are fed directly would be
-/// almost never defensible for long-horizon regime analysis.
+#![allow(dead_code)]
+//! Observation-family configuration for the financial feature pipeline.
+//!
+//! # The central design decision
+//!
+//! The Markov Switching Model assumes
+//!
+//! ```text
+//! y_t | S_t = j  ~  N(μ_j, σ_j²)
+//! ```
+//!
+//! but the model says nothing about what `y_t` *is*.  For real market data,
+//! `y_t` is an observation-design choice.  This module enumerates the
+//! supported families and their configuration parameters.
+//!
+//! # Family taxonomy
+//!
+//! | Family | Symbol | Detector is sensitive to … |
+//! |---|---|---|
+//! | `LogReturn` | $r_t$ | changes in return distribution (mean, dispersion) |
+//! | `AbsReturn` | $\|r_t\|$ | changes in return magnitude / activity |
+//! | `SquaredReturn` | $r_t^2$ | changes in second-moment structure |
+//! | `RollingVol` | $v_t^{(w)}$ | changes in recent rolling volatility level |
+//! | `StandardizedReturn` | $z_t$ | changes in normalized shock size |
+//!
+//! The choice of family is part of the scientific hypothesis:
+//! returning to a null-model where raw prices are fed directly would be
+//! almost never defensible for long-horizon regime analysis.
 
 // =========================================================================
 // FeatureFamily

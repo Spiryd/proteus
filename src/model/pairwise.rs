@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Pairwise posterior transition probabilities for the Gaussian Markov Switching Model.
 ///
 /// # Mathematical specification

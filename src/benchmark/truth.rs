@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Ground-truth changepoint representation.
 ///
 /// A [`ChangePointTruth`] holds the ordered sequence of true changepoint

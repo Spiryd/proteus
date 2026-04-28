@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Diagnostics and trust-check layer for the Gaussian Markov Switching Model.
 ///
 /// # Purpose
@@ -673,7 +674,6 @@ fn canonical_regime_order(params: &ModelParams) -> Vec<usize> {
 fn build_run_summary(result: &EmResult, obs: &[f64]) -> Result<RunSummary> {
     let params = &result.params;
     let order = canonical_regime_order(params);
-    let k = params.k;
 
     // Run inference to get smoothed posteriors for occupancy.
     let fr = filter(params, obs)?;

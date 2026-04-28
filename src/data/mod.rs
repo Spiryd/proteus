@@ -1,3 +1,4 @@
+#![allow(unused_imports, dead_code)]
 /// Real financial market-data pipeline.
 ///
 /// This module is the bridge between the raw Alpha Vantage API responses

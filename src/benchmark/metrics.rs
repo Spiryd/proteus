@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Metric computation layer for the online benchmarking protocol.
 ///
 /// All metrics in this module are derived from a [`MatchResult`] and, where

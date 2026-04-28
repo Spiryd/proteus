@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use super::config::ExperimentConfig;
 use super::result::ExperimentResult;
 use super::runner::{ExperimentBackend, ExperimentRunner};

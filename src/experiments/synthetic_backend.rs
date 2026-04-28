@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Real synthetic experiment backend.
 ///
 /// Wires the full math stack for synthetic (simulated) experiments:
@@ -12,23 +13,15 @@ use rand::rngs::StdRng;
 use crate::benchmark::matching::{EventMatcher, MatchConfig};
 use crate::benchmark::metrics::MetricSuite;
 use crate::benchmark::truth::ChangePointTruth;
-use crate::detector::frozen::{FrozenModel, StreamingSession};
-use crate::detector::{
-    HardSwitchConfig, HardSwitchDetector, PersistencePolicy, PosteriorTransitionConfig,
-    PosteriorTransitionDetector, SurpriseConfig, SurpriseDetector,
-};
-use crate::model::em::{EmConfig, fit_em};
 use crate::model::params::ModelParams;
 use crate::model::simulate::simulate;
-use crate::online::OnlineFilterState;
 
-use super::config::{
-    DataConfig, DetectorType, EvaluationConfig, ExperimentConfig, ExperimentMode, TrainingMode,
-};
+use super::config::{DataConfig, EvaluationConfig, ExperimentConfig};
 use super::runner::{
     DataBundle, ExperimentBackend, FeatureBundle, ModelArtifact, OnlineRunArtifact, RealEvalArtifact,
     SyntheticEvalArtifact,
 };
+use super::shared::{run_online_shared, train_or_load_model_shared};
 
 // =========================================================================
 // Backend
@@ -80,6 +73,7 @@ impl ExperimentBackend for SyntheticBackend {
                     observations: sim.observations,
                     changepoint_truth: Some(changepoints),
                     train_n,
+                    timestamps: vec![],
                 })
             }
             DataConfig::Real { dataset_id, .. } => {
@@ -90,6 +84,7 @@ impl ExperimentBackend for SyntheticBackend {
                     observations: vec![],
                     changepoint_truth: None,
                     train_n: 0,
+                    timestamps: vec![],
                 })
             }
         }
@@ -116,6 +111,7 @@ impl ExperimentBackend for SyntheticBackend {
                 n_observations: 0,
                 observations: vec![],
                 train_n: 0,
+                timestamps: vec![],
             });
         }
 
@@ -139,6 +135,7 @@ impl ExperimentBackend for SyntheticBackend {
             n_observations: scaled.len(),
             observations: scaled,
             train_n,
+            timestamps: vec![],
         })
     }
 
@@ -150,74 +147,7 @@ impl ExperimentBackend for SyntheticBackend {
         cfg: &ExperimentConfig,
         features: &FeatureBundle,
     ) -> anyhow::Result<ModelArtifact> {
-        if features.observations.is_empty() {
-            return Ok(ModelArtifact {
-                source: "stub:empty".to_string(),
-                k_regimes: cfg.model.k_regimes,
-                diagnostics_ok: false,
-                params: None,
-                ll_history: vec![],
-                n_iter: 0,
-                converged: false,
-            });
-        }
-
-        match &cfg.model.training {
-            TrainingMode::FitOffline => {
-                let train_obs = &features.observations[..features.train_n.min(features.observations.len())];
-                let k = cfg.model.k_regimes;
-                let init_params = init_params_from_obs(train_obs, k)?;
-                let em_cfg = EmConfig {
-                    tol: cfg.model.em_tol,
-                    max_iter: cfg.model.em_max_iter,
-                    var_floor: 1e-6,
-                };
-                let em_result = fit_em(train_obs, init_params, &em_cfg)?;
-                let converged = em_result.converged;
-                let n_iter = em_result.n_iter;
-                let ll_history = em_result.ll_history.clone();
-                let params = em_result.params.clone();
-                Ok(ModelArtifact {
-                    source: "fitted".to_string(),
-                    k_regimes: k,
-                    diagnostics_ok: converged,
-                    params: Some(params),
-                    ll_history,
-                    n_iter,
-                    converged,
-                })
-            }
-            TrainingMode::LoadFrozen { artifact_id } => {
-                // Attempt to load from disk; fall back to fitting if not found.
-                let path = std::path::PathBuf::from(artifact_id).join("model_params.json");
-                if path.exists() {
-                    let json = std::fs::read_to_string(&path)?;
-                    let fps: crate::experiments::result::FittedParamsSummary =
-                        serde_json::from_str(&json)?;
-                    let params = ModelParams::new(
-                        fps.pi,
-                        fps.transition,
-                        fps.means,
-                        fps.variances,
-                    );
-                    let k = params.k;
-                    Ok(ModelArtifact {
-                        source: format!("loaded:{artifact_id}"),
-                        k_regimes: k,
-                        diagnostics_ok: true,
-                        params: Some(params),
-                        ll_history: fps.ll_history,
-                        n_iter: fps.n_iter,
-                        converged: fps.converged,
-                    })
-                } else {
-                    anyhow::bail!(
-                        "LoadFrozen: model file not found at {}",
-                        path.display()
-                    )
-                }
-            }
-        }
+        train_or_load_model_shared(cfg, features)
     }
 
     // ------------------------------------------------------------------
@@ -229,76 +159,7 @@ impl ExperimentBackend for SyntheticBackend {
         model: &ModelArtifact,
         features: &FeatureBundle,
     ) -> anyhow::Result<OnlineRunArtifact> {
-        let params = model.params.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("run_online: no fitted model params available")
-        })?;
-
-        let frozen = FrozenModel::new(params.clone())?;
-        let filter_state = OnlineFilterState::new(frozen.params());
-        let save = cfg.output.save_traces;
-        let obs = &features.observations;
-
-        macro_rules! run_session {
-            ($detector:expr) => {{
-                let mut session = StreamingSession::new(frozen, filter_state, $detector);
-                let outputs = session.step_batch(obs)?;
-
-                let mut alarm_indices = Vec::new();
-                let mut score_trace = if save { Vec::with_capacity(obs.len()) } else { vec![] };
-                let mut regime_posteriors = if save { Vec::with_capacity(obs.len()) } else { vec![] };
-                let mut alarm_events = Vec::new();
-
-                for out in &outputs {
-                    if save {
-                        score_trace.push(out.detector.score);
-                        regime_posteriors.push(out.filter.filtered.clone());
-                    }
-                    if out.detector.alarm {
-                        alarm_indices.push(out.filter.t);
-                        if let Some(ev) = out.detector.alarm_event.clone() {
-                            alarm_events.push(ev);
-                        }
-                    }
-                }
-
-                Ok(OnlineRunArtifact {
-                    n_steps: obs.len(),
-                    n_alarms: alarm_indices.len(),
-                    alarm_indices,
-                    score_trace,
-                    regime_posteriors,
-                })
-            }};
-        }
-
-        let det = &cfg.detector;
-        let persistence = PersistencePolicy::new(det.persistence_required, det.cooldown);
-
-        match &det.detector_type {
-            DetectorType::HardSwitch => {
-                let detector = HardSwitchDetector::new(HardSwitchConfig {
-                    confidence_threshold: det.threshold.max(0.0),
-                    persistence,
-                });
-                run_session!(detector)
-            }
-            DetectorType::PosteriorTransition => {
-                let detector = PosteriorTransitionDetector::new(PosteriorTransitionConfig {
-                    score_kind: crate::detector::PosteriorTransitionScoreKind::LeavePrevious,
-                    threshold: det.threshold,
-                    persistence,
-                });
-                run_session!(detector)
-            }
-            DetectorType::Surprise => {
-                let detector = SurpriseDetector::new(SurpriseConfig {
-                    threshold: det.threshold,
-                    ema_alpha: None,
-                    persistence,
-                });
-                run_session!(detector)
-            }
-        }
+        run_online_shared(cfg, model, features)
     }
 
     // ------------------------------------------------------------------
@@ -453,7 +314,7 @@ fn build_synthetic_params(scenario_id: &str, k: usize) -> anyhow::Result<ModelPa
                 vec![0.0001, 0.0016], // high-vol with occasional shocks
             ))
         }
-        "asset_specific" | _ if k == 3 => {
+        _ if k == 3 => {
             // K=3: calm / moderate / volatile
             Ok(ModelParams::new(
                 vec![0.34, 0.33, 0.33],

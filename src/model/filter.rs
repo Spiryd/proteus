@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Forward filter (Hamilton filter) for the Gaussian Markov Switching Model.
 ///
 /// # Mathematical specification

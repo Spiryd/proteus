@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
@@ -20,6 +21,8 @@ pub struct DataBundle {
     pub changepoint_truth: Option<Vec<usize>>,
     /// Number of observations belonging to the training partition.
     pub train_n: usize,
+    /// Bar timestamps parallel to `observations`.  Empty for synthetic / dry-run.
+    pub timestamps: Vec<chrono::NaiveDateTime>,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +33,8 @@ pub struct FeatureBundle {
     pub observations: Vec<f64>,
     /// Training partition size (mirrors DataBundle::train_n after warmup trim).
     pub train_n: usize,
+    /// Bar timestamps parallel to `observations`.  Empty for synthetic / dry-run.
+    pub timestamps: Vec<chrono::NaiveDateTime>,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +135,7 @@ impl ExperimentBackend for DryRunBackend {
             observations: vec![],
             changepoint_truth: None,
             train_n: (n as f64 * 0.7) as usize,
+            timestamps: vec![],
         })
     }
 
@@ -144,6 +150,7 @@ impl ExperimentBackend for DryRunBackend {
             n_observations: n,
             observations: vec![],
             train_n: (n as f64 * 0.7) as usize,
+            timestamps: vec![],
         })
     }
 
@@ -259,8 +266,11 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
         let mut artifacts = Vec::<ArtifactRef>::new();
         let mut timings = Vec::<StageTiming>::new();
         let mut warnings = Vec::<String>::new();
+        #[allow(unused_assignments)]
         let mut model_summary = None;
+        #[allow(unused_assignments)]
         let mut detector_summary = None;
+        #[allow(unused_assignments)]
         let mut evaluation_summary = None;
 
         let mut status = RunStatus::Success;
@@ -510,20 +520,19 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
         };
 
         // Save fitted model params as JSON for LoadFrozen reuse
-        if cfg.output.write_json {
-            if let Some(ms) = &result.model_summary {
-                if let Some(fp) = &ms.fitted_params {
-                    let params_path = run_dir.join("model_params.json");
-                    if let Ok(json) = serde_json::to_string_pretty(fp) {
-                        if let Ok(()) = std::fs::write(&params_path, json) {
-                            result.artifacts.push(ArtifactRef {
-                                name: "model_params".to_string(),
-                                path: params_path.to_string_lossy().to_string(),
-                                kind: "json".to_string(),
-                            });
-                        }
-                    }
-                }
+        if cfg.output.write_json
+            && let Some(ms) = &result.model_summary
+            && let Some(fp) = &ms.fitted_params
+        {
+            let params_path = run_dir.join("model_params.json");
+            if let Ok(json) = serde_json::to_string_pretty(fp)
+                && let Ok(()) = std::fs::write(&params_path, json)
+            {
+                result.artifacts.push(ArtifactRef {
+                    name: "model_params".to_string(),
+                    path: params_path.to_string_lossy().to_string(),
+                    kind: "json".to_string(),
+                });
             }
         }
 
@@ -545,8 +554,9 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
                     });
                 }
             }
-            if let Some(ds) = &result.detector_summary {
-                if !ds.alarm_indices.is_empty() {
+            if let Some(ds) = &result.detector_summary
+                && !ds.alarm_indices.is_empty()
+            {
                     let alarm_path = run_dir.join("alarms.csv");
                     let rows: Vec<String> = ds
                         .alarm_indices
@@ -562,9 +572,94 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
                             kind: "csv".to_string(),
                         });
                     }
-                }
             }
         }
+
+        // Export real-evaluation summary CSVs (Route A alignment + Route B segmentation)
+        if cfg.output.write_csv
+            && let Some(EvaluationSummary::Real {
+                event_coverage,
+                alarm_relevance,
+                segmentation_coherence,
+            }) = &result.evaluation_summary
+        {
+            let real_eval_path = run_dir.join("real_eval_summary.csv");
+            let content = format!(
+                "metric,value\nevent_coverage,{:.6}\nalarm_relevance,{:.6}\nsegmentation_coherence,{:.6}\n",
+                event_coverage, alarm_relevance, segmentation_coherence
+            );
+            if let Ok(()) = std::fs::write(&real_eval_path, content) {
+                result.artifacts.push(ArtifactRef {
+                    name: "real_eval_summary".to_string(),
+                    path: real_eval_path.to_string_lossy().to_string(),
+                    kind: "csv".to_string(),
+                });
+            }
+        }
+
+        // Save true changepoints (synthetic runs only).
+        if cfg.output.write_csv
+            && let Some(ref cps) = data.changepoint_truth
+            && !cps.is_empty()
+        {
+            let cp_path = run_dir.join("changepoints.csv");
+            let rows: Vec<String> = cps
+                .iter()
+                .enumerate()
+                .map(|(i, &t)| format!("{},{}", i + 1, t))
+                .collect();
+            let content = format!("cp_n,t\n{}", rows.join("\n"));
+            if let Ok(()) = std::fs::write(&cp_path, content) {
+                result.artifacts.push(ArtifactRef {
+                    name: "changepoints".to_string(),
+                    path: cp_path.to_string_lossy().to_string(),
+                    kind: "csv".to_string(),
+                });
+            }
+        }
+
+        // Save regime posteriors as CSV (when save_traces = true).
+        if cfg.output.save_traces && cfg.output.write_csv && !result.regime_posteriors.is_empty() {
+            let post_path = run_dir.join("regime_posteriors.csv");
+            let k = cfg.model.k_regimes;
+            let header = (0..k)
+                .map(|j| format!("p{j}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let rows: Vec<String> = result
+                .regime_posteriors
+                .iter()
+                .enumerate()
+                .map(|(i, post)| {
+                    let vals: Vec<String> =
+                        post.iter().map(|v| format!("{:.8}", v)).collect();
+                    format!("{},{}", i + 1, vals.join(","))
+                })
+                .collect();
+            let content = format!("t,{header}\n{}", rows.join("\n"));
+            if let Ok(()) = std::fs::write(&post_path, content) {
+                result.artifacts.push(ArtifactRef {
+                    name: "regime_posteriors".to_string(),
+                    path: post_path.to_string_lossy().to_string(),
+                    kind: "csv".to_string(),
+                });
+            }
+        }
+
+        // ---- Auto-generate plots ------------------------------------------------
+        // Plots are generated whenever observations exist (any run with real data
+        // or save_traces=true for synthetic).  For synthetic runs without real
+        // timestamps, sequential day-indexed timestamps are synthesised.
+        // Skipped in test builds (font renderer unavailable in headless CI).
+        #[cfg(not(test))]
+        generate_plots(
+            &cfg,
+            &data,
+            &features,
+            &mut result,
+            &mut warnings,
+            &run_dir,
+        );
 
         result.timings.push(StageTiming {
             stage: RunStage::Export,
@@ -613,6 +708,7 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn failed_with_artifacts(
         &self,
         cfg: &ExperimentConfig,
@@ -694,6 +790,134 @@ fn generate_run_id(cfg: &ExperimentConfig, config_hash: u64) -> String {
     }
 }
 
+/// Generate signal, score, and posterior plots and append artifacts to `result`.
+/// Only called in non-test builds to avoid font-renderer panics in headless CI.
+#[cfg(not(test))]
+fn generate_plots(
+    cfg: &ExperimentConfig,
+    data: &DataBundle,
+    features: &FeatureBundle,
+    result: &mut ExperimentResult,
+    warnings: &mut Vec<String>,
+    run_dir: &std::path::Path,
+) {
+    use crate::reporting::plot::{
+        render_detector_scores, render_regime_posteriors, render_signal_with_alarms,
+        DetectorScoresPlotInput, RegimePosteriorPlotInput, SignalWithAlarmsPlotInput,
+    };
+
+    let n_obs = features.observations.len();
+    if n_obs == 0 {
+        return;
+    }
+
+    let ts_utc = ensure_plot_timestamps(&features.timestamps, n_obs);
+
+    let alarm_set: std::collections::HashSet<usize> = result
+        .detector_summary
+        .as_ref()
+        .map(|ds| ds.alarm_indices.iter().copied().collect())
+        .unwrap_or_default();
+    let alarm_flags: Vec<(chrono::DateTime<chrono::Utc>, bool)> = ts_utc
+        .iter()
+        .enumerate()
+        .map(|(i, ts)| (*ts, alarm_set.contains(&(i + 1))))
+        .collect();
+
+    let true_cps: Option<Vec<chrono::DateTime<chrono::Utc>>> =
+        data.changepoint_truth.as_ref().map(|cps| {
+            cps.iter()
+                .filter_map(|&i| ts_utc.get(i.saturating_sub(1)).copied())
+                .collect()
+        });
+
+    let feature_label = format!("{:?}", cfg.features.family);
+
+    // Plot 1: Signal with alarms.
+    let signal_input = SignalWithAlarmsPlotInput {
+        timestamps: ts_utc.clone(),
+        observations: features.observations.clone(),
+        alarms: alarm_flags.clone(),
+        true_changepoints: true_cps,
+        title: format!("{} — Signal & Alarms", cfg.meta.run_label),
+        y_label: feature_label,
+    };
+    let signal_path = run_dir.join("signal_alarms.png");
+    match render_signal_with_alarms(&signal_input, &signal_path) {
+        Ok(()) => result.artifacts.push(ArtifactRef {
+            name: "plot_signal_alarms".to_string(),
+            path: signal_path.to_string_lossy().to_string(),
+            kind: "png".to_string(),
+        }),
+        Err(e) => warnings.push(format!("signal_alarms plot failed: {e}")),
+    }
+
+    // Plot 2: Detector scores.
+    if !result.score_trace.is_empty() {
+        let score_input = DetectorScoresPlotInput {
+            timestamps: ts_utc.clone(),
+            scores: result.score_trace.clone(),
+            threshold: cfg.detector.threshold,
+            alarms: alarm_flags.clone(),
+            title: format!(
+                "{} — Detector Scores ({:?})",
+                cfg.meta.run_label, cfg.detector.detector_type
+            ),
+        };
+        let score_path = run_dir.join("detector_scores.png");
+        match render_detector_scores(&score_input, &score_path) {
+            Ok(()) => result.artifacts.push(ArtifactRef {
+                name: "plot_detector_scores".to_string(),
+                path: score_path.to_string_lossy().to_string(),
+                kind: "png".to_string(),
+            }),
+            Err(e) => warnings.push(format!("detector_scores plot failed: {e}")),
+        }
+    }
+
+    // Plot 3: Regime posteriors.
+    if !result.regime_posteriors.is_empty() {
+        let post_input = RegimePosteriorPlotInput {
+            timestamps: ts_utc.clone(),
+            posteriors: result.regime_posteriors.clone(),
+            title: format!(
+                "{} — Regime Posteriors (K={})",
+                cfg.meta.run_label, cfg.model.k_regimes
+            ),
+        };
+        let post_path = run_dir.join("regime_posteriors.png");
+        match render_regime_posteriors(&post_input, &post_path) {
+            Ok(()) => result.artifacts.push(ArtifactRef {
+                name: "plot_regime_posteriors".to_string(),
+                path: post_path.to_string_lossy().to_string(),
+                kind: "png".to_string(),
+            }),
+            Err(e) => warnings.push(format!("regime_posteriors plot failed: {e}")),
+        }
+    }
+}
+
+/// Returns `stored` as UTC if non-empty, otherwise synthesises sequential
+/// day-indexed timestamps from 2000-01-01 (used for synthetic experiments
+/// that have no real timestamps).
+fn ensure_plot_timestamps(
+    stored: &[chrono::NaiveDateTime],
+    n: usize,
+) -> Vec<chrono::DateTime<chrono::Utc>> {
+    if !stored.is_empty() {
+        stored.iter().map(|t| t.and_utc()).collect()
+    } else {
+        let base = chrono::NaiveDate::from_ymd_opt(2000, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc();
+        (0..n)
+            .map(|i| base + chrono::Duration::days(i as i64))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -716,6 +940,7 @@ mod tests {
                 observations: vec![],
                 changepoint_truth: None,
                 train_n: 70,
+                timestamps: vec![],
             })
         }
         fn build_features(
@@ -797,6 +1022,7 @@ mod tests {
             evaluation: match mode {
                 ExperimentMode::Synthetic => EvaluationConfig::Synthetic { matching_window: 5 },
                 ExperimentMode::Real => EvaluationConfig::Real {
+                    proxy_events_path: String::new(),
                     route_a_point_pre_bars: 2,
                     route_a_point_post_bars: 2,
                     route_a_causal_only: true,

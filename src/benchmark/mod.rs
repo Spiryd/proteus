@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 /// Online benchmarking protocol for Markov-Switching-based changepoint detectors.
 ///
 /// # Purpose

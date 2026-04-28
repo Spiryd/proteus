@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Regime-conditional Gaussian emission model for the Markov Switching Model.
 ///
 /// # Mathematical specification

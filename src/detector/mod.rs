@@ -1,3 +1,4 @@
+#![allow(unused_imports, dead_code)]
 /// Changepoint detection layer for the Gaussian Markov Switching Model.
 ///
 /// # Architecture

@@ -128,8 +128,8 @@ pub fn evaluate_proxy_events(
     for e in events {
         let (l, u, reference_idx) = event_window_indices(timestamps, e, &config.point_policy)?;
         if let Some((ll, uu)) = l.zip(u) {
-            for i in ll..=uu {
-                window_mask[i] = true;
+            for mask in &mut window_mask[ll..=uu] {
+                *mask = true;
             }
             let matched: Vec<usize> = alarms
                 .iter()

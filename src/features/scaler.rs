@@ -1,37 +1,38 @@
-/// Leakage-safe feature normalization / scaling.
-///
-/// # The leakage problem
-///
-/// A scaler that is fitted on the *full* dataset (train + validation + test)
-/// uses distributional information from the future to transform past
-/// observations.  In the regime-detection context this means the detector
-/// would be responding to an anomaly defined relative to a standard it
-/// could not have known at deployment time.  This invalidates evaluation
-/// results.
-///
-/// The correct procedure is:
-///
-/// 1. Fit scaler parameters on the **training partition only**.
-/// 2. Apply the frozen scaler to all partitions (train, validation, test)
-///    and to the live online stream.
-/// 3. Never re-estimate the scaler on validation or test data.
-///
-/// # Supported scaling policies
-///
-/// | Policy | Formula | Use case |
-/// |---|---|---|
-/// | `None` | $y_t' = y_t$ | Raw features (recommended first) |
-/// | `ZScore` | $y_t' = (y_t - \mu) / \sigma$ | Gaussian-shaped features |
-/// | `RobustZScore` | $y_t' = (y_t - m) / s$ | Heavy-tailed or outlier-rich features |
-///
-/// where $\mu, \sigma$ are the training-set mean and standard deviation,
-/// and $m, s$ are the training-set median and interquartile range (IQR).
-///
-/// # Degenerate case
-///
-/// If the training-set standard deviation (or IQR) is zero, no scaling is
-/// applied (the scaler falls back to the identity).  This prevents division
-/// by zero for pathological constant features.
+#![allow(dead_code)]
+//! Leakage-safe feature normalization / scaling.
+//!
+//! # The leakage problem
+//!
+//! A scaler that is fitted on the *full* dataset (train + validation + test)
+//! uses distributional information from the future to transform past
+//! observations.  In the regime-detection context this means the detector
+//! would be responding to an anomaly defined relative to a standard it
+//! could not have known at deployment time.  This invalidates evaluation
+//! results.
+//!
+//! The correct procedure is:
+//!
+//! 1. Fit scaler parameters on the **training partition only**.
+//! 2. Apply the frozen scaler to all partitions (train, validation, test)
+//!    and to the live online stream.
+//! 3. Never re-estimate the scaler on validation or test data.
+//!
+//! # Supported scaling policies
+//!
+//! | Policy | Formula | Use case |
+//! |---|---|---|
+//! | `None` | $y_t' = y_t$ | Raw features (recommended first) |
+//! | `ZScore` | $y_t' = (y_t - \mu) / \sigma$ | Gaussian-shaped features |
+//! | `RobustZScore` | $y_t' = (y_t - m) / s$ | Heavy-tailed or outlier-rich features |
+//!
+//! where $\mu, \sigma$ are the training-set mean and standard deviation,
+//! and $m, s$ are the training-set median and interquartile range (IQR).
+//!
+//! # Degenerate case
+//!
+//! If the training-set standard deviation (or IQR) is zero, no scaling is
+//! applied (the scaler falls back to the identity).  This prevents division
+//! by zero for pathological constant features.
 
 // =========================================================================
 // ScalingPolicy

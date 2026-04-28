@@ -1,9 +1,10 @@
+#![allow(dead_code)]
 /// Grid search over detector parameters.
 ///
 /// Sweeps a `ParamGrid` over `threshold`, `persistence_required`, and
 /// `cooldown` while holding everything else fixed in a base
 /// [`ExperimentConfig`]. Results are sorted by score descending (best first).
-use super::config::{ExperimentConfig, EvaluationConfig};
+use super::config::ExperimentConfig;
 use super::result::{EvaluationSummary, ExperimentResult, RunStatus};
 use super::runner::{ExperimentBackend, ExperimentRunner};
 

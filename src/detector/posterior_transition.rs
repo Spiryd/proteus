@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use super::{
     AlarmEvent, Detector, DetectorInput, DetectorKind, DetectorOutput, PersistencePolicy,
     dominant_regime,

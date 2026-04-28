@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 /// Phase 17: Synthetic-to-real calibration layer.
 ///
 /// This module provides a principled bridge between:

@@ -1,8 +1,8 @@
+#![allow(dead_code)]
 use super::artifact::RunArtifactLayout;
 use super::export::json;
 use super::table::{MetricsTableBuilder, MetricsTableRow};
 use crate::experiments::{EvaluationSummary, ExperimentConfig, ExperimentResult};
-use std::path::PathBuf;
 
 /// Orchestrates full reporting for a single run
 pub struct RunReporter {
@@ -115,7 +115,7 @@ impl AggregateReporter {
 
     /// Generate aggregate comparison table
     pub fn generate_comparison_table(&self) -> anyhow::Result<String> {
-        let mut builder = MetricsTableBuilder::new();
+        let builder = MetricsTableBuilder::new();
 
         for _layout in &self.runs {
             // Load each run's result and build a row

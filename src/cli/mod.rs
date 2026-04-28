@@ -13,6 +13,7 @@ use crate::experiments::registry;
 use crate::experiments::result::{EvaluationSummary, ExperimentResult, RunStage, RunStatus};
 use crate::experiments::runner::{DryRunBackend, ExperimentRunner};
 use crate::experiments::synthetic_backend::SyntheticBackend;
+use crate::experiments::real_backend::RealBackend;
 use crate::experiments::search::{grid_search, ParamGrid, SearchPoint};
 use crate::reporting::table::{MetricsTableBuilder, MetricsTableRow};
 
@@ -394,6 +395,8 @@ fn menu_experiments() -> anyhow::Result<()> {
         ListRegistry,
         RunFromRegistry,
         RunAllE2E,
+        RunRealExperiment,
+        CalibrateScenario,
         ParamSearch,
         ValidateConfig,
         ShowConfigTemplate,
@@ -410,6 +413,12 @@ fn menu_experiments() -> anyhow::Result<()> {
                 }
                 ExperimentsAction::RunAllE2E => {
                     "Run All (E2E)           — run every registered experiment with full logging"
+                }
+                ExperimentsAction::RunRealExperiment => {
+                    "Run Real Experiment     — run a real-data experiment from the registry"
+                }
+                ExperimentsAction::CalibrateScenario => {
+                    "Calibrate Scenario      — calibrate a synthetic scenario to empirical targets"
                 }
                 ExperimentsAction::ParamSearch => {
                     "Parameter Search        — grid search over detector parameters"
@@ -432,6 +441,8 @@ fn menu_experiments() -> anyhow::Result<()> {
                 ExperimentsAction::ListRegistry,
                 ExperimentsAction::RunFromRegistry,
                 ExperimentsAction::RunAllE2E,
+                ExperimentsAction::RunRealExperiment,
+                ExperimentsAction::CalibrateScenario,
                 ExperimentsAction::ParamSearch,
                 ExperimentsAction::ValidateConfig,
                 ExperimentsAction::ShowConfigTemplate,
@@ -483,6 +494,12 @@ fn menu_experiments() -> anyhow::Result<()> {
             }
             ExperimentsAction::RunAllE2E => {
                 cmd_e2e_run()?;
+            }
+            ExperimentsAction::RunRealExperiment => {
+                cmd_run_real_experiment()?;
+            }
+            ExperimentsAction::CalibrateScenario => {
+                cmd_calibrate_scenario()?;
             }
             ExperimentsAction::ParamSearch => {
                 let reg = registry::registry();
@@ -538,22 +555,261 @@ fn menu_experiments() -> anyhow::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Calibrate Scenario — empirical profile from a synthetic run → CalibrationReport
+// ---------------------------------------------------------------------------
+
+fn cmd_calibrate_scenario() -> anyhow::Result<()> {
+    use crate::calibration::{
+        CalibrationDatasetTag, CalibrationMappingConfig, CalibrationPartition,
+        EmpiricalCalibrationProfile, SummaryTargetSet, VerificationTolerance,
+        run_calibration_workflow, summarize_observation_values,
+    };
+    use crate::experiments::config::{ExperimentMode, FeatureFamilyConfig};
+    use crate::experiments::runner::ExperimentBackend;
+    use crate::features::FeatureFamily;
+
+    // Only synthetic experiments make sense for the offline calibration workflow.
+    let reg = registry::registry();
+    let syn_entries: Vec<_> = reg
+        .iter()
+        .filter(|e| (e.build)().mode == ExperimentMode::Synthetic)
+        .collect();
+
+    if syn_entries.is_empty() {
+        println!("\n  No synthetic experiments found in registry.");
+        return Ok(());
+    }
+
+    let choices: Vec<String> = syn_entries
+        .iter()
+        .map(|e| format!("{} — {}", e.id, e.description))
+        .collect();
+    let idx = match Select::new("Pick synthetic experiment to calibrate:", choices).prompt() {
+        Ok(choice) => syn_entries.iter().position(|e| choice.starts_with(e.id)).unwrap_or(0),
+        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let entry = syn_entries[idx];
+    let cfg = (entry.build)();
+
+    println!();
+    println!("  Calibrating '{}'...", cfg.meta.run_label);
+    println!("  (Simulating data and computing empirical targets — this is fast.)");
+    println!();
+
+    // Run the synthetic backend just to get feature observations.
+    let backend = SyntheticBackend::new();
+    let data = backend.resolve_data(&cfg)?;
+    let features = backend.build_features(&cfg, &data)?;
+
+    if features.observations.is_empty() {
+        println!("  [!] No feature observations produced — cannot calibrate.");
+        return Ok(());
+    }
+
+    // Summarise empirical targets from the training partition only.
+    let train_obs = &features.observations[..features.train_n.min(features.observations.len())];
+    let empirical_summary = summarize_observation_values(train_obs);
+
+    // Build the calibration profile.
+    let tag = CalibrationDatasetTag {
+        asset: match &cfg.data {
+            DataConfig::Synthetic { scenario_id, .. } => format!("synthetic:{scenario_id}"),
+            DataConfig::Real { asset, .. } => asset.clone(),
+        },
+        frequency: "synthetic".to_string(),
+        feature_label: format!("{:?}", cfg.features.family),
+        partition: CalibrationPartition::TrainOnly,
+    };
+    let feature_family = match &cfg.features.family {
+        FeatureFamilyConfig::LogReturn => FeatureFamily::LogReturn,
+        FeatureFamilyConfig::AbsReturn => FeatureFamily::AbsReturn,
+        FeatureFamilyConfig::SquaredReturn => FeatureFamily::SquaredReturn,
+        FeatureFamilyConfig::RollingVol { window, session_reset } => {
+            FeatureFamily::RollingVol { window: *window, session_reset: *session_reset }
+        }
+        FeatureFamilyConfig::StandardizedReturn { window, epsilon, session_reset } => {
+            FeatureFamily::StandardizedReturn { window: *window, epsilon: *epsilon, session_reset: *session_reset }
+        }
+    };
+    let profile = EmpiricalCalibrationProfile {
+        tag,
+        feature_family,
+        targets: SummaryTargetSet::Full,
+        summary: empirical_summary,
+    };
+
+    // Run full calibration workflow.
+    let seed = cfg.reproducibility.seed.unwrap_or(42);
+    let mapping = CalibrationMappingConfig {
+        k: cfg.model.k_regimes,
+        horizon: match &cfg.data {
+            DataConfig::Synthetic { horizon, .. } => *horizon,
+            DataConfig::Real { .. } => 2000,
+        },
+        ..CalibrationMappingConfig::default()
+    };
+    let report = run_calibration_workflow(
+        profile,
+        mapping,
+        VerificationTolerance::default(),
+        seed,
+    )?;
+    let view = report.view();
+
+    println!("  Calibration Report");
+    println!("  ------------------");
+    println!("  Asset         : {}", view.asset);
+    println!("  Feature       : {}", view.feature_label);
+    println!("  Horizon       : {}", view.horizon);
+    println!("  Empirical n   : {}", view.empirical_n);
+    println!("  Synthetic n   : {}", view.synthetic_n);
+    println!("  Verification  : {}", if view.verification_passed { "PASSED" } else { "FAILED" });
+    if !view.verification_notes.is_empty() {
+        println!("  Notes:");
+        for note in &view.verification_notes {
+            println!("    - {note}");
+        }
+    }
+    println!("  Expected durations:");
+    for (j, d) in view.expected_durations.iter().enumerate() {
+        println!("    Regime {j}: {d:.1} bars (p_jj = {:.4})", 1.0 - 1.0 / d.max(1.0));
+    }
+
+    // Empirical statistics
+    let s = &report.empirical_profile.summary;
+    println!();
+    println!("  Empirical Summary (train partition):");
+    println!("    mean={:.6}  var={:.6}  std={:.6}", s.mean, s.variance, s.std_dev);
+    println!("    q01={:.4}  q05={:.4}  q50={:.4}  q95={:.4}  q99={:.4}", s.q01, s.q05, s.q50, s.q95, s.q99);
+    println!("    acf1={:.4}  abs_acf1={:.4}  sign_change_rate={:.4}", s.acf1, s.abs_acf1, s.sign_change_rate);
+    println!("    high_episode_mean_dur={:.1}  low_episode_mean_dur={:.1}", s.high_episode_mean_duration, s.low_episode_mean_duration);
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Run Real Experiment — interactive selection + RealBackend execution
+// ---------------------------------------------------------------------------
+
+fn cmd_run_real_experiment() -> anyhow::Result<()> {
+    use crate::experiments::config::ExperimentMode;
+
+    // Filter registry to real experiments only.
+    let reg = registry::registry();
+    let real_entries: Vec<_> = reg.iter()
+        .filter(|e| (e.build)().mode == ExperimentMode::Real)
+        .collect();
+
+    if real_entries.is_empty() {
+        println!();
+        println!("  No real-data experiments found in the registry.");
+        println!("  Add some in src/experiments/registry.rs using ExperimentMode::Real.");
+        return Ok(());
+    }
+
+    println!();
+    println!("  Real-Data Experiments:");
+    println!("  ----------------------");
+    println!("  These experiments require cached market data.");
+    println!("  Run 'Data > Ingest' first if you have not done so.");
+    println!();
+
+    let choices: Vec<String> = real_entries.iter()
+        .map(|e| format!("{} — {}", e.id, e.description))
+        .collect();
+
+    let idx = match Select::new("Pick real experiment:", choices).prompt() {
+        Ok(choice) => real_entries
+            .iter()
+            .position(|e| choice.starts_with(e.id))
+            .unwrap_or(0),
+        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let entry = real_entries[idx];
+    let cfg = (entry.build)();
+
+    // Prompt for cache path (default from the standard location).
+    let cache_path = match Text::new("DuckDB cache path:")
+        .with_default("data/commodities.duckdb")
+        .prompt()
+    {
+        Ok(s) => s,
+        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    println!();
+    print_config_block(&cfg);
+    println!();
+    println!("  Cache : {}", cache_path);
+    println!();
+    println!("  Running '{}'...", cfg.meta.run_label);
+    println!("  (This may take several seconds while loading data and running EM.)");
+    println!();
+
+    let backend = RealBackend::new(cache_path);
+    let runner = ExperimentRunner::new(backend);
+    let result = runner.run(cfg.clone());
+
+    println!();
+    println!("  Pipeline:");
+    print_stage_log(&cfg, &result);
+    println!();
+    print_run_result_summary(&result);
+    println!();
+
+    // Print real-eval metrics if available.
+    if let Some(crate::experiments::result::EvaluationSummary::Real {
+        event_coverage,
+        alarm_relevance,
+        segmentation_coherence,
+    }) = &result.evaluation_summary
+    {
+        println!("  Real-Eval Metrics:");
+        println!("  ------------------");
+        println!("  Route A  event_coverage     = {:.4}", event_coverage);
+        println!("  Route A  alarm_relevance     = {:.4}", alarm_relevance);
+        println!("  Route B  segmentation_coherence = {:.4}", segmentation_coherence);
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // E2E run — verbose, step-by-step, with metrics table
 // ---------------------------------------------------------------------------
 
 fn cmd_e2e_run() -> anyhow::Result<()> {
+    use crate::experiments::config::ExperimentMode;
+
     let reg = registry::registry();
-    let total = reg.len();
+    // E2E run only covers synthetic experiments; real experiments require
+    // cached market data and are run separately via Run Real Experiment.
+    let synthetic_entries: Vec<_> = reg.iter()
+        .filter(|e| (e.build)().mode == ExperimentMode::Synthetic)
+        .collect();
+    let total = synthetic_entries.len();
 
     println!();
     println!("  ==============================================================");
-    println!("  E2E Run — {} registered experiments", total);
+    println!("  E2E Run — {} synthetic experiments", total);
+    println!("  (Real-data experiments skipped — use 'Run Real Experiment')");
     println!("  ==============================================================");
 
     let runner = ExperimentRunner::new(SyntheticBackend::new());
     let mut all_results: Vec<(ExperimentConfig, ExperimentResult)> = Vec::new();
 
-    for (i, entry) in reg.iter().enumerate() {
+    for (i, entry) in synthetic_entries.iter().enumerate() {
         let cfg = (entry.build)();
 
         println!();
@@ -623,28 +879,28 @@ fn cmd_e2e_run() -> anyhow::Result<()> {
         }
 
         // Show fitted model params if available
-        if let Some(ms) = &result.model_summary {
-            if let Some(fp) = &ms.fitted_params {
-                println!("  Model   : K={}  LL={:.4}  iter={}  converged={}", ms.k_regimes, fp.log_likelihood, fp.n_iter, fp.converged);
-                for j in 0..ms.k_regimes {
-                    println!(
-                        "  Regime {}: mu={:.6}  var={:.6}  pi={:.4}",
-                        j, fp.means[j], fp.variances[j], fp.pi[j]
-                    );
-                }
-                for i in 0..ms.k_regimes {
-                    let row: Vec<String> = fp.transition[i].iter().map(|v| format!("{v:.4}")).collect();
-                    println!("  Trans[{}]: [{}]", i, row.join(", "));
-                }
+        if let Some(ms) = &result.model_summary
+            && let Some(fp) = &ms.fitted_params
+        {
+            println!("  Model   : K={}  LL={:.4}  iter={}  converged={}", ms.k_regimes, fp.log_likelihood, fp.n_iter, fp.converged);
+            for j in 0..ms.k_regimes {
+                println!(
+                    "  Regime {}: mu={:.6}  var={:.6}  pi={:.4}",
+                    j, fp.means[j], fp.variances[j], fp.pi[j]
+                );
+            }
+            for i in 0..ms.k_regimes {
+                let row: Vec<String> = fp.transition[i].iter().map(|v| format!("{v:.4}")).collect();
+                println!("  Trans[{}]: [{}]", i, row.join(", "));
             }
         }
 
-        if !result.artifacts.is_empty() {
-            if let Some(first) = result.artifacts.first() {
-                let p = Path::new(&first.path);
-                if let Some(dir) = p.parent() {
-                    println!("  Artifacts: {}", dir.display());
-                }
+        if !result.artifacts.is_empty()
+            && let Some(first) = result.artifacts.first()
+        {
+            let p = Path::new(&first.path);
+            if let Some(dir) = p.parent() {
+                println!("  Artifacts: {}", dir.display());
             }
         }
 
@@ -945,12 +1201,20 @@ fn print_config_block(cfg: &ExperimentConfig) {
             asset,
             frequency,
             dataset_id,
-            ..
+            date_start,
+            date_end,
         } => {
+            let range = match (date_start.as_deref(), date_end.as_deref()) {
+                (Some(s), Some(e)) => format!("{s} .. {e}"),
+                (Some(s), None) => format!("{s} .. (latest)"),
+                (None, Some(e)) => format!("(earliest) .. {e}"),
+                (None, None) => "all available".to_string(),
+            };
             println!(
                 "    Data       : Real  asset={}  {:?}  dataset={}",
                 asset, frequency, dataset_id
             );
+            println!("    Date range : {}", range);
         }
     }
     println!(
@@ -1022,11 +1286,15 @@ fn print_stage_log(cfg: &ExperimentConfig, result: &ExperimentResult) {
             RunStage::BuildFeatures => {
                 let n = match &cfg.data {
                     DataConfig::Synthetic { horizon, .. } => horizon.saturating_sub(1),
-                    DataConfig::Real { .. } => 0,
+                    DataConfig::Real { .. } => result
+                        .detector_summary
+                        .as_ref()
+                        .map(|ds| ds.n_alarms) // n_steps not stored; use n_steps from online
+                        .unwrap_or(0),
                 };
                 format!(
-                    "feature={:?}  scaling={:?}  n={}",
-                    cfg.features.family, cfg.features.scaling, n
+                    "family={:?}  scaling={:?}  session_aware={}  n_feature_obs={}",
+                    cfg.features.family, cfg.features.scaling, cfg.features.session_aware, n
                 )
             }
             RunStage::TrainOrLoadModel => result
@@ -1055,12 +1323,33 @@ fn print_stage_log(cfg: &ExperimentConfig, result: &ExperimentResult) {
             RunStage::RunOnline => {
                 let n_steps = match &cfg.data {
                     DataConfig::Synthetic { horizon, .. } => horizon.saturating_sub(1),
-                    DataConfig::Real { .. } => 0,
+                    DataConfig::Real { .. } => result
+                        .timings
+                        .iter()
+                        .find(|t| t.stage == RunStage::RunOnline)
+                        .map(|_| {
+                            result
+                                .detector_summary
+                                .as_ref()
+                                .map(|ds| ds.alarm_indices.last().copied().unwrap_or(0))
+                                .unwrap_or(0)
+                        })
+                        .unwrap_or(0),
                 };
                 result
                     .detector_summary
                     .as_ref()
-                    .map(|ds| format!("n_steps={}  n_alarms={}", n_steps, ds.n_alarms))
+                    .map(|ds| {
+                        format!(
+                            "detector={:?}  thr={:.3}  persistence={}  cooldown={}  n_steps≈{}  n_alarms={}",
+                            cfg.detector.detector_type,
+                            cfg.detector.threshold,
+                            cfg.detector.persistence_required,
+                            cfg.detector.cooldown,
+                            n_steps,
+                            ds.n_alarms
+                        )
+                    })
                     .unwrap_or_default()
             }
             RunStage::Evaluate => match &result.evaluation_summary {
@@ -1354,10 +1643,10 @@ fn collect_flag_values(args: &[String], flag: &str) -> Vec<String> {
     let mut values = Vec::new();
     let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
-        if arg == flag {
-            if let Some(val) = iter.next() {
-                values.push(val.clone());
-            }
+        if arg == flag
+            && let Some(val) = iter.next()
+        {
+            values.push(val.clone());
         }
     }
     values

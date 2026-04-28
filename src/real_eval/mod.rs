@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 /// Phase 18 real-data evaluation layer.
 ///
 /// This module evaluates detector alarms on real market data without latent

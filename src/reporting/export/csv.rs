@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use super::schema::*;
 use csv::Writer;
 use std::path::Path;

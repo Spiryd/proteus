@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Per-stream and aggregate benchmark result objects, timing, and labels.
 use std::time::Duration;
 

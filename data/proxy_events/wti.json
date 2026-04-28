@@ -1,0 +1,93 @@
+[
+  {
+    "id": "opec_production_cut_2018_12",
+    "event_type": "supply",
+    "label": "OPEC+ agree 1.2 mb/d production cut",
+    "asset_scope": "WTI",
+    "anchor": { "Point": { "at": "2018-12-07T00:00:00" } }
+  },
+  {
+    "id": "iran_sanctions_2019_05",
+    "event_type": "geopolitical",
+    "label": "US revokes Iran sanctions waivers — supply risk premium",
+    "asset_scope": "WTI",
+    "anchor": { "Point": { "at": "2019-05-02T00:00:00" } }
+  },
+  {
+    "id": "aramco_drone_attack_2019_09",
+    "event_type": "supply",
+    "label": "Drone attack on Saudi Aramco Abqaiq facility — 5 mb/d offline",
+    "asset_scope": "WTI",
+    "anchor": { "Point": { "at": "2019-09-14T00:00:00" } }
+  },
+  {
+    "id": "covid_demand_collapse_2020",
+    "event_type": "demand",
+    "label": "COVID-19 global demand destruction — historic supply glut",
+    "asset_scope": "WTI",
+    "anchor": { "Window": { "start": "2020-02-20T00:00:00", "end": "2020-04-20T00:00:00" } }
+  },
+  {
+    "id": "wti_negative_2020_04",
+    "event_type": "crisis",
+    "label": "WTI May futures go negative (-$37) — storage capacity exhausted",
+    "asset_scope": "WTI",
+    "anchor": { "Point": { "at": "2020-04-20T00:00:00" } }
+  },
+  {
+    "id": "opec_plus_historic_cut_2020_04",
+    "event_type": "supply",
+    "label": "OPEC+ 9.7 mb/d historic production cut agreement",
+    "asset_scope": "WTI",
+    "anchor": { "Point": { "at": "2020-04-12T00:00:00" } }
+  },
+  {
+    "id": "recovery_rally_2020_q3",
+    "event_type": "trend_change",
+    "label": "Oil demand recovery rally — vaccine optimism + economy reopening",
+    "asset_scope": "WTI",
+    "anchor": { "Window": { "start": "2020-10-01T00:00:00", "end": "2021-03-31T00:00:00" } }
+  },
+  {
+    "id": "russia_ukraine_2022_02",
+    "event_type": "geopolitical",
+    "label": "Russia invades Ukraine — energy sanctions / supply shock",
+    "asset_scope": "WTI",
+    "anchor": { "Window": { "start": "2022-02-24T00:00:00", "end": "2022-03-08T00:00:00" } }
+  },
+  {
+    "id": "wti_peak_2022_03",
+    "event_type": "trend_change",
+    "label": "WTI peaks near $130 — war premium fully priced",
+    "asset_scope": "WTI",
+    "anchor": { "Point": { "at": "2022-03-08T00:00:00" } }
+  },
+  {
+    "id": "spr_release_2022_03",
+    "event_type": "policy",
+    "label": "IEA + US announce coordinated 180 mb SPR release",
+    "asset_scope": "WTI",
+    "anchor": { "Point": { "at": "2022-03-31T00:00:00" } }
+  },
+  {
+    "id": "opec_production_cut_2022_10",
+    "event_type": "supply",
+    "label": "OPEC+ 2 mb/d production cut — defies US pressure",
+    "asset_scope": "WTI",
+    "anchor": { "Point": { "at": "2022-10-05T00:00:00" } }
+  },
+  {
+    "id": "opec_voluntary_cut_2023_04",
+    "event_type": "supply",
+    "label": "Saudi Arabia + allies announce surprise 1.6 mb/d voluntary cut",
+    "asset_scope": "WTI",
+    "anchor": { "Point": { "at": "2023-04-02T00:00:00" } }
+  },
+  {
+    "id": "israel_hamas_war_2023_10",
+    "event_type": "geopolitical",
+    "label": "Hamas attacks Israel — Middle East risk premium spike",
+    "asset_scope": "WTI",
+    "anchor": { "Point": { "at": "2023-10-07T00:00:00" } }
+  }
+]

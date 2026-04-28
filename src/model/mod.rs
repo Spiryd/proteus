@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 pub mod diagnostics;
 pub mod em;
 pub mod emission;

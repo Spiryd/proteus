@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Calibration mapping: empirical summary functionals -> synthetic generator parameters.
 ///
 /// This module implements the operator
@@ -268,9 +269,9 @@ fn durations_to_transition_rows(
         let rem = 1.0 - p_ii;
         if symmetric_offdiag {
             let each = rem / (k - 1) as f64;
-            for j in 0..k {
+            for (j, cell) in rows[i].iter_mut().enumerate() {
                 if j != i {
-                    rows[i][j] = each;
+                    *cell = each;
                 }
             }
         } else {

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use plotters::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -21,10 +22,10 @@ pub fn render_delay_distribution(
 
     // Calculate histogram bins
     let max_delay = *input.delays.iter().max().unwrap_or(&1);
-    let mut bins = vec![0usize; max_delay as usize + 1];
+    let mut bins = vec![0usize; max_delay + 1];
     for &delay in &input.delays {
-        if (delay as usize) < bins.len() {
-            bins[delay as usize] += 1;
+        if delay < bins.len() {
+            bins[delay] += 1;
         }
     }
 

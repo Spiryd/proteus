@@ -1,5 +1,4 @@
-use plotters::style::RGBColor;
-
+#![allow(dead_code)]
 pub mod colors {
     use plotters::style::RGBColor;
 

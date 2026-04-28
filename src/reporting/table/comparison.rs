@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Aggregate comparison table builder for comparing detectors across runs
 pub struct ComparisonTableBuilder;
 

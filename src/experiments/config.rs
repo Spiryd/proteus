@@ -212,6 +212,10 @@ pub enum EvaluationConfig {
         matching_window: usize,
     },
     Real {
+        /// Path to a JSON file containing `Vec<ProxyEvent>`.
+        /// Empty string (default) means no proxy events; Route A will report zero coverage.
+        #[serde(default)]
+        proxy_events_path: String,
         route_a_point_pre_bars: usize,
         route_a_point_post_bars: usize,
         route_a_causal_only: bool,

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Causal, trailing-window rolling statistics for financial feature engineering.
 ///
 /// # Trailing-window invariant (causality)
@@ -240,10 +241,10 @@ pub fn rolling_vol_session_aware(
     let mut out = Vec::with_capacity(returns.len().saturating_sub(window - 1));
     let mut prev_ts: Option<chrono::NaiveDateTime> = None;
     for r in returns {
-        if let Some(prev) = prev_ts {
-            if is_new_session(prev, r.timestamp) {
-                stats.reset();
-            }
+        if let Some(prev) = prev_ts
+            && is_new_session(prev, r.timestamp)
+        {
+            stats.reset();
         }
         prev_ts = Some(r.timestamp);
         if r.value.is_finite() {
@@ -271,10 +272,10 @@ pub fn standardized_returns_session_aware(
     let mut out = Vec::with_capacity(returns.len().saturating_sub(window - 1));
     let mut prev_ts: Option<chrono::NaiveDateTime> = None;
     for r in returns {
-        if let Some(prev) = prev_ts {
-            if is_new_session(prev, r.timestamp) {
-                stats.reset();
-            }
+        if let Some(prev) = prev_ts
+            && is_new_session(prev, r.timestamp)
+        {
+            stats.reset();
         }
         prev_ts = Some(r.timestamp);
         if r.value.is_finite() {

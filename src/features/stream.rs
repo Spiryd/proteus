@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Model-ready observation stream: the final output of the feature pipeline.
 ///
 /// # Pipeline summary

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Causal event matching between true changepoints and detector alarms.
 ///
 /// # Matching protocol

@@ -20,7 +20,9 @@
 config.toml
 
 # Local database file storing cached data
-/data
+/data/*
+!/data/proxy_events/
 
 # Directory for experiment runs, which may contain large files and should not be committed
 /runs
+/runs_test

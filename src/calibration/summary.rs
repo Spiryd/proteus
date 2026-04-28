@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Empirical summary extraction for Phase 17 synthetic-to-real calibration.
 ///
 /// This module computes feature-family-aware calibration statistics from the
@@ -182,7 +183,7 @@ pub fn summarize_observation_values(values: &[f64]) -> EmpiricalSummary {
     let abs_values: Vec<f64> = values.iter().map(|x| x.abs()).collect();
     let abs_acf1 = lag1_autocorr(&abs_values);
 
-    let sign_change_rate = sign_change_fraction(&values);
+    let sign_change_rate = sign_change_fraction(values);
     let (high_episode_mean_duration, low_episode_mean_duration) =
         episode_duration_means(&abs_values, q95.abs());
 

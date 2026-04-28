@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Scenario packaging for calibrated synthetic experiments.
 use serde::{Deserialize, Serialize};
 

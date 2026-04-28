@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Observed-data log-likelihood for the Gaussian Markov Switching Model.
 ///
 /// # Mathematical specification

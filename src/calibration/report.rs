@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// End-to-end Phase 17 calibration workflow report.
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
