@@ -31,6 +31,7 @@ use crate::alphavantage::commodity::{CommodityEndpoint, Interval};
 use crate::cache::CommodityCache;
 use crate::data::{CleanSeries, DataMode, DataSource, DatasetMeta, Observation, PriceField,
                   SessionConvention};
+use crate::data::split::{PartitionedSeries, SplitConfig};
 use crate::features::family::FeatureFamily;
 use crate::features::scaler::ScalingPolicy;
 use crate::features::stream::{FeatureConfig as StreamFeatureConfig, FeatureStream};
@@ -271,11 +272,52 @@ impl ExperimentBackend for RealBackend {
 
         let series = self.load_clean_series(asset, frequency, date_start, date_end)?;
         let n = series.observations.len();
-        let train_n = (n as f64 * 0.70) as usize;
 
         let prices: Vec<f64> = series.observations.iter().map(|o| o.value).collect();
         let timestamps: Vec<chrono::NaiveDateTime> =
             series.observations.iter().map(|o| o.timestamp).collect();
+
+        // Compute timestamp-based 70/15/15 split boundaries from the sorted series.
+        let train_idx = (n as f64 * 0.70) as usize;
+        let val_idx = (n as f64 * 0.85) as usize;
+        let epoch_max = chrono::NaiveDate::from_ymd_opt(9999, 12, 31)
+            .unwrap()
+            .and_hms_opt(23, 59, 59)
+            .unwrap();
+        let train_end_ts = timestamps.get(train_idx).copied().unwrap_or(epoch_max);
+        let val_end_ts = timestamps.get(val_idx).copied().unwrap_or(epoch_max);
+
+        // Serialize ValidationReport before moving series into PartitionedSeries.
+        let validation_report_json = serde_json::to_string_pretty(&serde_json::json!({
+            "n_input": series.report.n_input,
+            "n_dropped_duplicates": series.report.n_dropped_duplicates,
+            "n_output": series.report.n_output,
+            "had_unsorted_input": series.report.had_unsorted_input,
+            "n_gaps": series.report.gaps.len(),
+            "gaps": series.report.gaps.iter().map(|g| serde_json::json!({
+                "from": g.from.to_string(),
+                "to": g.to.to_string(),
+            })).collect::<Vec<_>>(),
+        })).ok();
+
+        // Build the chronological split (consumes series).
+        let split_cfg = SplitConfig { train_end: train_end_ts, val_end: val_end_ts };
+        let partitioned = PartitionedSeries::from_series(series, split_cfg);
+        let train_n = partitioned.train.len();
+
+        // Serialize the split summary for auditing.
+        let split_summary_json = serde_json::to_string_pretty(&serde_json::json!({
+            "asset": asset,
+            "n_total": n,
+            "n_train": train_n,
+            "n_validation": partitioned.validation.len(),
+            "n_test": partitioned.test.len(),
+            "train_end": train_end_ts.to_string(),
+            "val_end": val_end_ts.to_string(),
+            "train_start": partitioned.train.first().map(|o| o.timestamp.to_string()),
+            "val_start": partitioned.validation.first().map(|o| o.timestamp.to_string()),
+            "test_start": partitioned.test.first().map(|o| o.timestamp.to_string()),
+        })).ok();
 
         let interval = Self::to_interval(frequency);
         Ok(DataBundle {
@@ -285,6 +327,8 @@ impl ExperimentBackend for RealBackend {
             changepoint_truth: None,
             train_n,
             timestamps,
+            split_summary_json,
+            validation_report_json,
         })
     }
 
@@ -537,6 +581,8 @@ impl ExperimentBackend for RealBackend {
             event_coverage: result.route_a.event_coverage,
             alarm_relevance: result.route_a.alarm_relevance,
             segmentation_coherence: result.route_b.global.coherence_score,
+            route_a_result_json: serde_json::to_string_pretty(&result.route_a).ok(),
+            route_b_result_json: serde_json::to_string_pretty(&result.route_b).ok(),
         })
     }
 }
@@ -717,6 +763,8 @@ mod tests {
             changepoint_truth: None,
             train_n: 0,
             timestamps: vec![],
+            split_summary_json: None,
+            validation_report_json: None,
         };
         let result = backend.build_features(&cfg, &data);
         assert!(result.is_ok());

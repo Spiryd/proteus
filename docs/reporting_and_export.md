@@ -131,15 +131,22 @@ Every run produces artifacts in several families. Each family serves a distinct 
 
 **Contents:**
 - Model summary (JSON): regime count, parameter estimates, fit diagnostics.
+- Fit metadata (JSON): EM iteration count, convergence status, initial and final log-likelihood, convergence reason.
+- Log-likelihood history (CSV): log-likelihood value at each EM iteration.
+- Feature summary (JSON): feature label, observation counts, train/val split, scaling type, obs mean/variance/std/min/max.
 - Detector summary (JSON): detector type, threshold, persistence, n_alarms.
 - Evaluation summary (JSON): mode-specific metrics (synthetic: coverage, precision; real: Routes A and B metrics).
 - Aggregate metrics (JSON): timing, success status, warnings.
+- Batch summary (JSON, batch runs only): per-run status, IDs, and aggregate metrics across all runs in a batch.
 
 **File examples:**
-- `model_summary.json`
-- `detector_summary.json`
-- `evaluation_summary.json`
-- `metrics.json`
+- `model_params.json`
+- `fit_summary.json`
+- `loglikelihood_history.csv`
+- `feature_summary.json`
+- `summary.json`
+- `result.json`
+- `batch_summary.json`
 
 **Why:** These summaries enable rapid extraction of key results without parsing large raw files.
 

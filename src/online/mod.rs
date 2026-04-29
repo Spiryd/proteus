@@ -215,23 +215,25 @@ impl OnlineFilterState {
 
         let sum_exp: f64 = log_scores.iter().map(|&l| (l - max_log).exp()).sum();
         let log_ct = max_log + sum_exp.ln();
-        let ct = log_ct.exp();
-
-        if !ct.is_finite() || ct <= 0.0 {
-            anyhow::bail!(
-                "OnlineFilterState::step at t={}: predictive density c_t={ct} \
-                 is not finite-positive",
-                self.t + 1
-            );
-        }
 
         // ------------------------------------------------------------------
-        // Step 4 — Bayes update: α_{t|t}(j) = fⱼ(yₜ) · α_{t|t-1}(j) / cₜ
+        // Step 4 — Bayes update in log-space (numerically stable).
+        //
+        // When the observation is extreme relative to all regime distributions,
+        // ct = exp(log_ct) may underflow to 0 in f64.  Computing the filtered
+        // posterior directly as exp(log_scores[j] - log_ct) avoids division by
+        // zero while preserving the correct posterior proportions.
+        //
+        // This is mathematically identical to the naive form
+        //   filtered[j] = emission * predicted / ct
+        // but remains well-conditioned for any finite log_ct.
         // ------------------------------------------------------------------
         let mut new_filtered = vec![0.0_f64; k];
         for j in 0..k {
-            new_filtered[j] = log_scores[j].exp() / ct;
+            new_filtered[j] = (log_scores[j] - log_ct).exp();
         }
+
+        let ct = log_ct.exp(); // may be 0 for extreme obs; only used for StepResult field
 
         // ------------------------------------------------------------------
         // Runtime invariant: filtered normalization

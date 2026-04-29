@@ -75,13 +75,12 @@ impl CommodityCache {
         let conn = self.conn.lock().unwrap();
         let result: Option<NaiveDateTime> = conn
             .query_row(
-                "SELECT MAX(fetched_at) FROM commodity_prices WHERE symbol = ? AND interval = ?",
+                "SELECT fetched_at FROM commodity_prices WHERE symbol = ? AND interval = ? ORDER BY fetched_at DESC LIMIT 1",
                 duckdb::params![symbol, interval],
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|e| anyhow::anyhow!("last_fetched query failed: {e}"))?
-            .flatten();
+            .map_err(|e| anyhow::anyhow!("last_fetched query failed: {e}"))?;
         Ok(result)
     }
 
@@ -144,8 +143,7 @@ impl CommodityCache {
         let fetched_at = Utc::now().naive_utc();
         let total_start = std::time::Instant::now();
 
-        // Wrap everything in a single transaction — avoids one disk sync per row,
-        // which is the main reason row-by-row inserts are slow.
+        // Step 1: delete old rows + upsert meta in one small transaction.
         conn.execute_batch("BEGIN")
             .map_err(|e| anyhow::anyhow!("BEGIN failed: {e}"))?;
 
@@ -160,7 +158,6 @@ impl CommodityCache {
             duckdb::params![symbol, interval],
         )
         .map_err(|e| anyhow::anyhow!("Delete meta failed: {e}"))?;
-        println!("  [db] delete:       {:.3}s", t.elapsed().as_secs_f32());
 
         conn.execute(
             "INSERT INTO commodity_meta (symbol, interval, name, unit) VALUES (?, ?, ?, ?)",
@@ -168,41 +165,36 @@ impl CommodityCache {
         )
         .map_err(|e| anyhow::anyhow!("Insert meta failed: {e}"))?;
 
-        let t = std::time::Instant::now();
-        let mut stmt = conn
-            .prepare(
-                "INSERT INTO commodity_prices (symbol, interval, date, value, fetched_at)
-                 VALUES (?, ?, ?, ?, ?)",
-            )
-            .map_err(|e| anyhow::anyhow!("Prepare insert failed: {e}"))?;
-
-        for point in &response.data {
-            stmt.execute(duckdb::params![
-                symbol,
-                interval,
-                point.date,
-                point.value,
-                fetched_at
-            ])
-            .map_err(|e| anyhow::anyhow!("Insert point failed: {e}"))?;
-        }
-        println!(
-            "  [db] insert {} rows: {:.3}s",
-            response.data.len(),
-            t.elapsed().as_secs_f32()
-        );
-
-        let t = std::time::Instant::now();
         conn.execute_batch("COMMIT")
             .map_err(|e| anyhow::anyhow!("COMMIT failed: {e}"))?;
-        println!("  [db] commit:       {:.3}s", t.elapsed().as_secs_f32());
+        println!("  [db] delete:       {:.3}s", t.elapsed().as_secs_f32());
+
+        // Step 2: bulk-load price rows via the Appender — orders of magnitude
+        // faster than row-by-row prepared-statement inserts for large series.
+        let t = std::time::Instant::now();
+        let n = response.data.len();
+        {
+            let mut appender = conn
+                .appender("commodity_prices")
+                .map_err(|e| anyhow::anyhow!("Appender init failed: {e}"))?;
+
+            for (i, point) in response.data.iter().enumerate() {
+                appender
+                    .append_row(duckdb::params![symbol, interval, point.date, point.value, fetched_at])
+                    .map_err(|e| anyhow::anyhow!("append_row failed at row {i}: {e}"))?;
+            }
+            appender
+                .flush()
+                .map_err(|e| anyhow::anyhow!("Appender flush failed: {e}"))?;
+        }
+        println!("  [db] insert {} rows: {:.3}s", n, t.elapsed().as_secs_f32());
         println!(
             "  [db] total store:  {:.3}s  ({} points)",
             total_start.elapsed().as_secs_f32(),
-            response.data.len()
+            n
         );
 
-        Ok(response.data.len())
+        Ok(n)
     }
 
     /// Summary of all series currently in the cache.

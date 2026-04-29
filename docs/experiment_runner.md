@@ -191,11 +191,21 @@ Artifacts must be written to deterministic, human-readable paths keyed by:
 
 Minimal export set:
 
-- `config.snapshot.json`,
-- `result.json`,
-- summary JSON.
+- `config.snapshot.json` — exact ExperimentConfig snapshot,
+- `result.json` — full ExperimentResult,
+- `summary.json` — lightweight metrics summary,
+- `model_params.json` — fitted ModelParams (reloadable via `LoadFrozen`),
+- `fit_summary.json` — human-readable EM fit metadata: K, n_iter, converged, log_likelihood_initial/final, convergence_reason,
+- `loglikelihood_history.csv` — log-likelihood at each EM iteration (`iteration,log_likelihood`),
+- `feature_summary.json` — feature pipeline metadata: label, n_obs, train_n, val_n, obs_mean/variance/std/min/max, scaling, session_aware.
 
-This supports auditability and thesis table/figure regeneration.
+Additional artifacts saved when `save_traces = true`:
+
+- `score_trace.csv` — per-step detector score,
+- `alarms.csv` — alarm timestamps and scores,
+- `regime_posteriors.csv` — T×K filtered posterior probabilities.
+
+Plot artifacts (`signal_alarms.png`, `detector_scores.png`, `regime_posteriors.png`, `delay_distribution.png`) are written when a font backend is available. On Windows without a font backend, plots are skipped without error.
 
 ---
 
@@ -224,6 +234,27 @@ Failure handling is first-class:
 - partial-success status is valid when core run succeeds but export stage fails.
 
 This prevents silent run loss and improves thesis-scale traceability.
+
+---
+
+## 9. Real-Mode Artifacts
+
+When the experiment is backed by `RealBackend`, the run directory additionally contains:
+
+- `split_summary.json` — train/val/test date boundaries and point counts (70/15/15 split),
+- `data_quality.json` — NaN rate, gap detection, out-of-range checks,
+- `real_eval_summary.csv` — Route A + Route B metric row,
+- `route_a_result.json` — proxy event alignment details (agreement, delay, missed, false alarms),
+- `route_b_result.json` — segmentation self-consistency details (n_segments, mean contrast ratio, coverage),
+- `segmentation.png` — segment-coloured plot of the real series (requires font backend).
+
+Real runs are launched via the `run-real` direct subcommand:
+
+```
+cargo run -- run-real --id real_spy_daily_hard_switch --cache data/commodities.duckdb --save ./output
+```
+
+The `DataConfig::Real` section of each registry entry controls which asset, frequency, and date window are used.
 
 ---
 

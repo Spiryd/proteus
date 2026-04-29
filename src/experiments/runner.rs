@@ -23,6 +23,10 @@ pub struct DataBundle {
     pub train_n: usize,
     /// Bar timestamps parallel to `observations`.  Empty for synthetic / dry-run.
     pub timestamps: Vec<chrono::NaiveDateTime>,
+    /// Split summary JSON (populated by RealBackend; None for synthetic/dry-run).
+    pub split_summary_json: Option<String>,
+    /// Data-quality validation report JSON (populated by RealBackend; None for synthetic/dry-run).
+    pub validation_report_json: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +81,8 @@ pub struct SyntheticEvalArtifact {
     pub n_true_positive: Option<usize>,
     pub n_false_positive: Option<usize>,
     pub n_missed: Option<usize>,
+    /// Per-event detection delays in bars; empty in DryRunBackend.
+    pub per_event_delays: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +90,10 @@ pub struct RealEvalArtifact {
     pub event_coverage: f64,
     pub alarm_relevance: f64,
     pub segmentation_coherence: f64,
+    /// Full Route A result JSON (populated by RealBackend; None for dry-run).
+    pub route_a_result_json: Option<String>,
+    /// Full Route B result JSON (populated by RealBackend; None for dry-run).
+    pub route_b_result_json: Option<String>,
 }
 
 pub trait ExperimentBackend {
@@ -136,6 +146,8 @@ impl ExperimentBackend for DryRunBackend {
             changepoint_truth: None,
             train_n: (n as f64 * 0.7) as usize,
             timestamps: vec![],
+            split_summary_json: None,
+            validation_report_json: None,
         })
     }
 
@@ -217,6 +229,7 @@ impl ExperimentBackend for DryRunBackend {
             n_true_positive: None,
             n_false_positive: None,
             n_missed: None,
+            per_event_delays: vec![],
         })
     }
 
@@ -239,6 +252,8 @@ impl ExperimentBackend for DryRunBackend {
                 .min(1.0),
             alarm_relevance: if online.n_alarms == 0 { 0.0 } else { 0.5 },
             segmentation_coherence: 1.0 / (min_seg.max(1) as f64),
+            route_a_result_json: None,
+            route_b_result_json: None,
         })
     }
 }
@@ -419,33 +434,51 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
             }
         };
 
-        let eval_result = match timed_stage(RunStage::Evaluate, &mut timings, || match cfg.mode {
-            ExperimentMode::Synthetic => self.backend.evaluate_synthetic(&cfg, &online).map(|s| {
-                EvaluationSummary::Synthetic {
-                    n_events: s.n_events,
-                    coverage: s.coverage,
-                    precision_like: s.precision_like,
-                    precision: s.precision,
-                    recall: s.recall,
-                    miss_rate: s.miss_rate,
-                    false_alarm_rate: s.false_alarm_rate,
-                    delay_mean: s.delay_mean,
-                    delay_median: s.delay_median,
-                    n_true_positive: s.n_true_positive,
-                    n_false_positive: s.n_false_positive,
-                    n_missed: s.n_missed,
-                }
-            }),
-            ExperimentMode::Real => {
-                self.backend
-                    .evaluate_real(&cfg, &online)
-                    .map(|r| EvaluationSummary::Real {
-                        event_coverage: r.event_coverage,
-                        alarm_relevance: r.alarm_relevance,
-                        segmentation_coherence: r.segmentation_coherence,
-                    })
+        // Evaluate — inline timing so we can capture the full artifact before
+        // it is consumed by the EvaluationSummary conversion.
+        #[allow(unused_assignments)]
+        let mut real_eval_artifact: Option<RealEvalArtifact> = None;
+        #[allow(unused_assignments)]
+        let mut syn_eval_artifact: Option<SyntheticEvalArtifact> = None;
+        let eval_t0 = Instant::now();
+        let eval_out: anyhow::Result<EvaluationSummary> = match cfg.mode {
+            ExperimentMode::Synthetic => {
+                self.backend.evaluate_synthetic(&cfg, &online).map(|s| {
+                    let summary = EvaluationSummary::Synthetic {
+                        n_events: s.n_events,
+                        coverage: s.coverage,
+                        precision_like: s.precision_like,
+                        precision: s.precision,
+                        recall: s.recall,
+                        miss_rate: s.miss_rate,
+                        false_alarm_rate: s.false_alarm_rate,
+                        delay_mean: s.delay_mean,
+                        delay_median: s.delay_median,
+                        n_true_positive: s.n_true_positive,
+                        n_false_positive: s.n_false_positive,
+                        n_missed: s.n_missed,
+                    };
+                    syn_eval_artifact = Some(s);
+                    summary
+                })
             }
-        }) {
+            ExperimentMode::Real => {
+                self.backend.evaluate_real(&cfg, &online).map(|artifact| {
+                    let summary = EvaluationSummary::Real {
+                        event_coverage: artifact.event_coverage,
+                        alarm_relevance: artifact.alarm_relevance,
+                        segmentation_coherence: artifact.segmentation_coherence,
+                    };
+                    real_eval_artifact = Some(artifact);
+                    summary
+                })
+            }
+        };
+        timings.push(StageTiming {
+            stage: RunStage::Evaluate,
+            duration_ms: eval_t0.elapsed().as_millis(),
+        });
+        let eval_result = match eval_out {
             Ok(v) => v,
             Err(e) => {
                 return self.failed_with_artifacts(
@@ -526,11 +559,94 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
         {
             let params_path = run_dir.join("model_params.json");
             if let Ok(json) = serde_json::to_string_pretty(fp)
-                && let Ok(()) = std::fs::write(&params_path, json)
+                && let Ok(()) = std::fs::write(&params_path, &json)
             {
                 result.artifacts.push(ArtifactRef {
                     name: "model_params".to_string(),
                     path: params_path.to_string_lossy().to_string(),
+                    kind: "json".to_string(),
+                });
+            }
+
+            // Save human-readable fit_summary.json (subset of model_params).
+            let fit_summary = serde_json::json!({
+                "k_regimes": cfg.model.k_regimes,
+                "n_iter": fp.n_iter,
+                "converged": fp.converged,
+                "log_likelihood_final": fp.log_likelihood,
+                "log_likelihood_initial": fp.ll_history.first().copied().unwrap_or(f64::NAN),
+                "pi": fp.pi,
+                "transition": fp.transition,
+                "means": fp.means,
+                "variances": fp.variances,
+                "convergence_reason": if fp.converged { "tolerance_met" } else { "max_iter_reached" },
+            });
+            let fit_path = run_dir.join("fit_summary.json");
+            if let Ok(json) = serde_json::to_string_pretty(&fit_summary)
+                && let Ok(()) = std::fs::write(&fit_path, json)
+            {
+                result.artifacts.push(ArtifactRef {
+                    name: "fit_summary".to_string(),
+                    path: fit_path.to_string_lossy().to_string(),
+                    kind: "json".to_string(),
+                });
+            }
+
+            // Save loglikelihood_history.csv — one row per EM iteration.
+            if cfg.output.write_csv && !fp.ll_history.is_empty() {
+                let ll_path = run_dir.join("loglikelihood_history.csv");
+                let rows: Vec<String> = fp.ll_history.iter().enumerate()
+                    .map(|(i, &ll)| format!("{},{:.8}", i, ll))
+                    .collect();
+                let content = format!("iteration,log_likelihood\n{}", rows.join("\n"));
+                if let Ok(()) = std::fs::write(&ll_path, content) {
+                    result.artifacts.push(ArtifactRef {
+                        name: "loglikelihood_history".to_string(),
+                        path: ll_path.to_string_lossy().to_string(),
+                        kind: "csv".to_string(),
+                    });
+                }
+            }
+        }
+
+        // Save feature_summary.json — feature pipeline metadata.
+        if cfg.output.write_json {
+            let obs_slice = &features.observations;
+            let (fmean, fvar) = if obs_slice.is_empty() {
+                (0.0_f64, 0.0_f64)
+            } else {
+                let m = obs_slice.iter().sum::<f64>() / obs_slice.len() as f64;
+                let v = obs_slice.iter().map(|x| (x - m).powi(2)).sum::<f64>()
+                    / obs_slice.len() as f64;
+                (m, v)
+            };
+            let fmin = obs_slice.iter().cloned().fold(f64::INFINITY, f64::min);
+            let fmax = obs_slice.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let warmup_trimmed = data.n_observations.saturating_sub(features.n_observations);
+            let feature_summary = serde_json::json!({
+                "feature_label": features.feature_label,
+                "n_raw_observations": data.n_observations,
+                "n_feature_observations": features.n_observations,
+                "warmup_trimmed": warmup_trimmed,
+                "train_n": features.train_n,
+                "val_n": features.n_observations.saturating_sub(features.train_n).saturating_sub(
+                    features.n_observations.saturating_sub(features.train_n) / 2
+                ),
+                "scaling": format!("{:?}", cfg.features.scaling),
+                "session_aware": cfg.features.session_aware,
+                "obs_mean": fmean,
+                "obs_variance": fvar,
+                "obs_std": fvar.sqrt(),
+                "obs_min": if fmin.is_finite() { fmin } else { 0.0 },
+                "obs_max": if fmax.is_finite() { fmax } else { 0.0 },
+            });
+            let fs_path = run_dir.join("feature_summary.json");
+            if let Ok(json) = serde_json::to_string_pretty(&feature_summary)
+                && let Ok(()) = std::fs::write(&fs_path, json)
+            {
+                result.artifacts.push(ArtifactRef {
+                    name: "feature_summary".to_string(),
+                    path: fs_path.to_string_lossy().to_string(),
                     kind: "json".to_string(),
                 });
             }
@@ -651,15 +767,97 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
         // or save_traces=true for synthetic).  For synthetic runs without real
         // timestamps, sequential day-indexed timestamps are synthesised.
         // Skipped in test builds (font renderer unavailable in headless CI).
+
+        // Save detector_config.json — always written when write_json is true.
+        if cfg.output.write_json
+            && let Some(ds) = &result.detector_summary
+        {
+            let detector_cfg_json = serde_json::json!({
+                "detector_type": ds.detector_type,
+                "threshold": ds.threshold,
+                "persistence_required": ds.persistence_required,
+                "cooldown": ds.cooldown,
+            });
+            let dc_path = run_dir.join("detector_config.json");
+            if let Ok(json) = serde_json::to_string_pretty(&detector_cfg_json)
+                && let Ok(()) = std::fs::write(&dc_path, json)
+            {
+                result.artifacts.push(ArtifactRef {
+                    name: "detector_config".to_string(),
+                    path: dc_path.to_string_lossy().to_string(),
+                    kind: "json".to_string(),
+                });
+            }
+        }
+
+        // Save split_summary.json and data_quality.json (populated by RealBackend).
+        if cfg.output.write_json {
+            if let Some(ref json) = data.split_summary_json {
+                let path = run_dir.join("split_summary.json");
+                if let Ok(()) = std::fs::write(&path, json) {
+                    result.artifacts.push(ArtifactRef {
+                        name: "split_summary".to_string(),
+                        path: path.to_string_lossy().to_string(),
+                        kind: "json".to_string(),
+                    });
+                }
+            }
+            if let Some(ref json) = data.validation_report_json {
+                let path = run_dir.join("data_quality.json");
+                if let Ok(()) = std::fs::write(&path, json) {
+                    result.artifacts.push(ArtifactRef {
+                        name: "data_quality".to_string(),
+                        path: path.to_string_lossy().to_string(),
+                        kind: "json".to_string(),
+                    });
+                }
+            }
+        }
+
+        // Save Route A + B detail JSONs (populated by RealBackend).
+        if cfg.output.write_json
+            && let Some(ref rfa) = real_eval_artifact
+        {
+            if let Some(ref json) = rfa.route_a_result_json {
+                let path = run_dir.join("route_a_result.json");
+                if let Ok(()) = std::fs::write(&path, json) {
+                    result.artifacts.push(ArtifactRef {
+                        name: "route_a_result".to_string(),
+                        path: path.to_string_lossy().to_string(),
+                        kind: "json".to_string(),
+                    });
+                }
+            }
+            if let Some(ref json) = rfa.route_b_result_json {
+                let path = run_dir.join("route_b_result.json");
+                if let Ok(()) = std::fs::write(&path, json) {
+                    result.artifacts.push(ArtifactRef {
+                        name: "route_b_result".to_string(),
+                        path: path.to_string_lossy().to_string(),
+                        kind: "json".to_string(),
+                    });
+                }
+            }
+        }
+
         #[cfg(not(test))]
-        generate_plots(
-            &cfg,
-            &data,
-            &features,
-            &mut result,
-            &mut warnings,
-            &run_dir,
-        );
+        {
+            let plot_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                generate_plots(
+                    &cfg,
+                    &data,
+                    &features,
+                    &mut result,
+                    &mut warnings,
+                    &run_dir,
+                    syn_eval_artifact.as_ref(),
+                    real_eval_artifact.as_ref(),
+                );
+            }));
+            if plot_result.is_err() {
+                warnings.push("plot generation skipped (font backend unavailable)".to_string());
+            }
+        }
 
         result.timings.push(StageTiming {
             stage: RunStage::Export,
@@ -790,9 +988,11 @@ fn generate_run_id(cfg: &ExperimentConfig, config_hash: u64) -> String {
     }
 }
 
-/// Generate signal, score, and posterior plots and append artifacts to `result`.
+/// Generate signal, score, posterior, delay-distribution, and segmentation
+/// plots and append artifacts to `result`.
 /// Only called in non-test builds to avoid font-renderer panics in headless CI.
 #[cfg(not(test))]
+#[allow(clippy::too_many_arguments)]
 fn generate_plots(
     cfg: &ExperimentConfig,
     data: &DataBundle,
@@ -800,6 +1000,8 @@ fn generate_plots(
     result: &mut ExperimentResult,
     warnings: &mut Vec<String>,
     run_dir: &std::path::Path,
+    syn_eval: Option<&SyntheticEvalArtifact>,
+    real_eval: Option<&RealEvalArtifact>,
 ) {
     use crate::reporting::plot::{
         render_detector_scores, render_regime_posteriors, render_signal_with_alarms,
@@ -895,6 +1097,59 @@ fn generate_plots(
             Err(e) => warnings.push(format!("regime_posteriors plot failed: {e}")),
         }
     }
+
+    // Plot 4: Detection delay distribution (synthetic runs with matched events).
+    if let Some(se) = syn_eval
+        && !se.per_event_delays.is_empty()
+    {
+        use crate::reporting::plot::{render_delay_distribution, DelayDistributionPlotInput};
+        let delay_input = DelayDistributionPlotInput {
+            delays: se.per_event_delays.clone(),
+            title: format!("{} — Detection Delay Distribution", cfg.meta.run_label),
+        };
+        let delay_path = run_dir.join("delay_distribution.png");
+        match render_delay_distribution(&delay_input, &delay_path) {
+            Ok(()) => result.artifacts.push(ArtifactRef {
+                name: "plot_delay_distribution".to_string(),
+                path: delay_path.to_string_lossy().to_string(),
+                kind: "png".to_string(),
+            }),
+            Err(e) => warnings.push(format!("delay_distribution plot failed: {e}")),
+        }
+    }
+
+    // Plot 5: Route B segmentation (real runs).
+    if let Some(re) = real_eval
+        && let Some(ref route_b_json) = re.route_b_result_json
+    {
+        use crate::real_eval::route_b::SegmentationEvaluationResult;
+        use crate::reporting::plot::{render_segmentation, SegmentationPlotInput};
+        if let Ok(route_b) = serde_json::from_str::<SegmentationEvaluationResult>(route_b_json) {
+            let seg_ts = ensure_plot_timestamps(&features.timestamps, features.observations.len());
+            let segs: Vec<_> = route_b
+                .segments
+                .iter()
+                .map(|s| (s.start_ts.and_utc(), s.end_ts.and_utc(), true))
+                .collect();
+            if !segs.is_empty() {
+                let seg_input = SegmentationPlotInput {
+                    timestamps: seg_ts,
+                    observations: features.observations.clone(),
+                    segments: segs,
+                    title: format!("{} — Route B Segmentation", cfg.meta.run_label),
+                };
+                let seg_path = run_dir.join("segmentation.png");
+                match render_segmentation(&seg_input, &seg_path) {
+                    Ok(()) => result.artifacts.push(ArtifactRef {
+                        name: "plot_segmentation".to_string(),
+                        path: seg_path.to_string_lossy().to_string(),
+                        kind: "png".to_string(),
+                    }),
+                    Err(e) => warnings.push(format!("segmentation plot failed: {e}")),
+                }
+            }
+        }
+    }
 }
 
 /// Returns `stored` as UTC if non-empty, otherwise synthesises sequential
@@ -941,6 +1196,8 @@ mod tests {
                 changepoint_truth: None,
                 train_n: 70,
                 timestamps: vec![],
+                split_summary_json: None,
+                validation_report_json: None,
             })
         }
         fn build_features(

@@ -26,3 +26,6 @@ config.toml
 # Directory for experiment runs, which may contain large files and should not be committed
 /runs
 /runs_test
+
+# Directory for verification artefacts
+/verification

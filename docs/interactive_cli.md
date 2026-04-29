@@ -11,8 +11,10 @@ cargo run              # interactive menu
 cargo run -- e2e       # run all registered experiments end-to-end
 cargo run -- param-search --id <experiment_id>
 cargo run -- run-experiment --config experiment_config.json
-cargo run -- run-batch --config a.json --config b.json
-cargo run -- inspect --dir ./runs/synthetic/my_run/run_001
+cargo run -- run-batch --config a.json --config b.json [--save <dir>]
+cargo run -- run-real  --id <experiment_id> [--cache <path.duckdb>] [--save <dir>]
+cargo run -- calibrate --id <experiment_id> [--out <dir>]
+cargo run -- inspect --dir ./runs/real/my_run/run_001
 cargo run -- status
 cargo run -- help
 ```
@@ -108,12 +110,63 @@ Tabular overview of everything currently in the cache:
 ```
 Symbol               Interval   Name                           Points   From         To           Last Fetched
 ----------------------------------------------------------------------------------------------------------------
-SPY                  60min      SPDR S&P 500 ETF Trust         390      2026-04-13   2026-04-14   2026-04-15 09:01:44
-BRENT                monthly    Brent (ICE) Crude Oil Prices   276      1987-05-01   2025-12-01   2026-04-13 14:32:01
-WTI                  monthly    West Texas Intermediate...     276      1983-01-01   2025-12-01   2026-04-13 14:31:58
+BRENT                daily      Crude Oil Prices Brent         9874     1987-05-20 2026-04-20 2026-04-29 18:31:54
+GOLD                 daily      XAUUSD                         5256     2011-06-01 2026-04-28 2026-04-29 18:31:55
+QQQ                  15min      QQQ Adjusted Close             364015   2000-01-03 2026-04-28 2026-04-29 18:31:52
+QQQ                  daily      QQQ Adjusted Close             6662     1999-11-01 2026-04-28 2026-04-29 18:27:33
+SPY                  15min      SPY Adjusted Close             378149   2000-01-03 2026-04-28 2026-04-29 18:27:30
+SPY                  daily      SPY Adjusted Close             6662     1999-11-01 2026-04-28 2026-04-29 18:27:32
+WTI                  daily      Crude Oil Prices WTI           10143    1986-01-02 2026-04-20 2026-04-29 18:31:55
 ```
 
 The **From** / **To** columns always show the date part only (no time component), regardless of whether the series is intraday.
+
+## Direct Subcommands Reference
+
+### `run-real`
+
+Runs a registered real-data experiment end-to-end using the DuckDB cache as input:
+
+```
+cargo run -- run-real --id real_spy_daily_hard_switch
+cargo run -- run-real --id real_spy_intraday_hard_switch --cache data/commodities.duckdb --save ./output
+```
+
+The six registered experiment IDs are:
+
+| ID | Type | Description |
+|----|------|-------------|
+| `hard_switch` | Synthetic | HardSwitch, 2-regime, LogReturn/ZScore |
+| `posterior_transition` | Synthetic | PosteriorTransition, 2-regime, LogReturn/ZScore |
+| `surprise` | Synthetic | Surprise, 2-regime, LogReturn/ZScore |
+| `real_spy_daily_hard_switch` | Real | SPY daily, HardSwitch, 2018–present |
+| `real_wti_daily_surprise` | Real | WTI daily, Surprise, 2018–present |
+| `real_spy_intraday_hard_switch` | Real | SPY 15-min session-aware, HardSwitch, 2022–2025 |
+
+Each real run produces 16 artifacts in `runs/real/<id>/<run_id>/`.
+
+### `calibrate`
+
+Calibrates a synthetic experiment against empirical data and writes three JSON files:
+
+```
+cargo run -- calibrate --id hard_switch --out ./calibration
+```
+
+Output files:
+- `calibration_summary.json` — empirical vs synthetic statistics, verification pass/fail
+- `synthetic_vs_empirical_summary.json` — side-by-side comparison table
+- `calibrated_scenario.json` — calibrated `ModelParams` ready for use in synthetic runs
+
+### `run-batch`
+
+Runs a list of JSON experiment configs in sequence:
+
+```
+cargo run -- run-batch --config a.json --config b.json --save ./batch_out
+```
+
+Writes `batch_summary.json` to the save directory with per-run status, IDs, and metrics.
 
 ## Cancellation
 

@@ -86,14 +86,36 @@ Pass a subcommand as the first argument to skip the interactive menu (useful for
 ```
 cargo run -- e2e                                          # run all registered experiments end-to-end
 cargo run -- run-experiment  --config experiment_config.json
-cargo run -- run-batch       --config a.json --config b.json
+cargo run -- run-batch       --config a.json --config b.json [--save <dir>]
+cargo run -- run-real        --id <experiment_id> [--cache <path.duckdb>] [--save <dir>]
+cargo run -- calibrate       --id <experiment_id> [--out <dir>]
 cargo run -- param-search    --id <experiment_id>         # grid search over detector params
-cargo run -- inspect         --dir ./runs/synthetic/my_run/run_001
+cargo run -- inspect         --dir ./runs/real/my_run/run_001
 cargo run -- status          [--config path/to/config.toml]
 cargo run -- help
 ```
 
 Experiment configs are JSON files. A template is printed by the **Experiments > Show Config Template** menu item.
+
+#### `run-real`
+
+Runs a real-data experiment from the registry by ID, loading price data from the DuckDB cache:
+
+```
+cargo run -- run-real --id real_spy_daily_hard_switch --cache data/commodities.duckdb --save ./output
+```
+
+Artifacts (16 files) are written to `runs/real/<id>/<run_id>/` and optionally copied to `--save`.
+
+#### `calibrate`
+
+Calibrates a synthetic experiment's model parameters against the empirical distribution of that experiment's feature family:
+
+```
+cargo run -- calibrate --id hard_switch --out ./output/calibration
+```
+
+Produces `calibration_summary.json`, `synthetic_vs_empirical_summary.json`, and `calibrated_scenario.json`.
 
 ---
 
@@ -194,19 +216,61 @@ runs/
   synthetic/
     <run_label>/
       <run_id>/
-        config/             — experiment_config.json snapshot
-        metadata/           — run_metadata.json, result.json
-        results/            — evaluation_summary.json
-        model_params.json   — fitted FittedParamsSummary (used by LoadFrozen)
-        score_trace.csv     — per-step detector score (if save_traces + write_csv)
-        alarms.csv          — alarm timestamps (if save_traces + write_csv)
-        metrics.md          — metrics table (Markdown)
-        metrics.csv         — metrics table (CSV)
-        metrics.tex         — metrics table (LaTeX)
-        plots/              — PNG plots (if enabled)
+        config.snapshot.json      — ExperimentConfig used for this run
+        result.json               — full ExperimentResult
+        summary.json              — lightweight metrics summary
+        model_params.json         — fitted ModelParams (K, pi, A, mu, sigma²)
+        fit_summary.json          — human-readable EM fit metadata
+        loglikelihood_history.csv — LL at each EM iteration
+        feature_summary.json      — feature pipeline metadata and stats
+        score_trace.csv           — per-step detector score
+        alarms.csv                — alarm timestamps and scores
+        changepoints.csv          — ground-truth changepoints (synthetic)
+        regime_posteriors.csv     — T×K filtered posterior probabilities
+        detector_config.json      — detector type and threshold settings
+        signal_alarms.png         — observation series with alarm markers
+        detector_scores.png       — score trace with threshold line
+        regime_posteriors.png     — posterior probability traces per regime
+        delay_distribution.png    — detection delay histogram (synthetic)
+  real/
+    <run_label>/
+      <run_id>/
+        config.snapshot.json      — ExperimentConfig used for this run
+        result.json               — full ExperimentResult
+        summary.json              — lightweight metrics summary
+        model_params.json         — fitted ModelParams
+        fit_summary.json          — human-readable EM fit metadata
+        loglikelihood_history.csv — LL at each EM iteration
+        feature_summary.json      — feature pipeline metadata and stats
+        score_trace.csv           — per-step detector score
+        alarms.csv                — alarm timestamps and scores
+        regime_posteriors.csv     — T×K filtered posterior probabilities
+        real_eval_summary.csv     — Route A + Route B metric summary
+        route_a_result.json       — proxy event alignment details
+        route_b_result.json       — segmentation self-consistency details
+        split_summary.json        — train/val/test split boundaries
+        data_quality.json         — NaN/gap/out-of-range checks
+        detector_config.json      — detector type and threshold settings
+        signal_alarms.png         — observation series with alarm markers
+        detector_scores.png       — score trace with threshold line
+        regime_posteriors.png     — posterior probability traces per regime
+        segmentation.png          — segment-coloured real-data plot
 ```
 
-The three registered synthetic experiments (`hard_switch`, `posterior_transition`, `surprise`) can all be run at once:
+### Registered Experiments
+
+Six experiments are registered in `src/experiments/registry.rs`:
+
+| ID | Type | Description |
+|----|------|-------------|
+| `hard_switch` | Synthetic | HardSwitch, 2-regime, LogReturn/ZScore, horizon 2000 |
+| `posterior_transition` | Synthetic | PosteriorTransition, 2-regime, LogReturn/ZScore, horizon 2000 |
+| `surprise` | Synthetic | Surprise, 2-regime, LogReturn/ZScore, horizon 2000 |
+| `real_spy_daily_hard_switch` | Real | SPY daily adj-close log-returns, HardSwitch, 2018–present |
+| `real_wti_daily_surprise` | Real | WTI daily spot-price log-returns, Surprise, 2018–present |
+| `real_spy_intraday_hard_switch` | Real | SPY 15-min log-returns (session-aware), HardSwitch, 2022–2025 |
+
+The three synthetic experiments can all be run at once:
 
 ```
 cargo run -- e2e
@@ -239,17 +303,30 @@ See [docs/experiment_runner.md](docs/experiment_runner.md).
 
 The reporting layer generates tables (and, in future work, plots) from run artifacts. See [docs/reporting_and_export.md](docs/reporting_and_export.md).
 
-| Output | Description | Status |
-|--------|-------------|--------|
-| `metrics.md / .csv / .tex` | Coverage / precision / recall / delay per run | ✓ Generated |
-| `comparison_table.csv` | Side-by-side comparison across runs | ✓ Generated (E2E aggregate) |
-| `model_params.json` | Fitted model summary (reloadable via LoadFrozen) | ✓ Generated |
-| `alarms.csv` | Alarm step indices | ✓ Generated (save_traces=true) |
-| `score_trace.csv` | Per-step detector score | ✓ Generated (save_traces=true) |
-| `signal_alarms.png` | Observation series with alarm markers | Pending |
-| `detector_scores.png` | Score trace with threshold line | Pending |
-| `regime_posteriors.png` | Filtered posterior traces per regime | Pending |
-| `delay_distribution.png` | Detection delay histogram (synthetic) | Pending |
+| Output | Description |
+|--------|-------------|
+| `result.json` | Full `ExperimentResult` with all pipeline outputs |
+| `summary.json` | Lightweight metrics summary |
+| `model_params.json` | Fitted ModelParams (reloadable via `LoadFrozen`) |
+| `fit_summary.json` | Human-readable EM fit metadata (K, iters, LL, convergence) |
+| `loglikelihood_history.csv` | Log-likelihood at each EM iteration |
+| `feature_summary.json` | Feature pipeline stats (n_obs, mean, variance, train/val split) |
+| `config.snapshot.json` | Exact `ExperimentConfig` snapshot |
+| `detector_config.json` | Detector type and threshold settings |
+| `score_trace.csv` | Per-step detector score |
+| `alarms.csv` | Alarm timestamps and scores |
+| `regime_posteriors.csv` | T×K filtered posterior probabilities |
+| `split_summary.json` | Train/val/test split info (real mode) |
+| `data_quality.json` | NaN/gap/out-of-range checks (real mode) |
+| `real_eval_summary.csv` | Route A + Route B metric row (real mode) |
+| `route_a_result.json` | Proxy event alignment detail (real Route A) |
+| `route_b_result.json` | Segmentation self-consistency detail (real Route B) |
+| `batch_summary.json` | Aggregate summary across all runs in a batch |
+| `signal_alarms.png` | Observation series with alarm markers (requires font backend) |
+| `detector_scores.png` | Score trace with threshold line (requires font backend) |
+| `regime_posteriors.png` | Filtered posterior traces per regime (requires font backend) |
+| `delay_distribution.png` | Detection delay histogram — synthetic only (requires font backend) |
+| `segmentation.png` | Segment-coloured real-data plot — real only (requires font backend) |
 
 ---
 
@@ -284,15 +361,15 @@ src/
     commodity.rs             — endpoint/interval types + deserialisation
     rate_limiter.rs          — token-bucket rate limiter
   cache/
-    mod.rs                   — DuckDB persistence layer
+    mod.rs                   — DuckDB persistence layer (store/load/last_fetched/status)
   data_service/
     mod.rs                   — cache-first orchestration, bulk ingest
   cli/
-    mod.rs                   — interactive menu + direct subcommand dispatch
+    mod.rs                   — interactive menu + 9 direct subcommand handlers
   features/
     mod.rs                   — feature families, scaling, session-aware pipeline
   model/
-    params.rs                — ModelParams (K, pi, A, mu, sigma^2)
+    params.rs                — ModelParams (K, pi, A, mu, sigma²)
     simulate.rs              — Gaussian MSM generative sampler
     filter.rs                — Hamilton forward filter
     smoother.rs              — backward smoother (RTS)
@@ -300,7 +377,7 @@ src/
     em.rs                    — Baum-Welch EM estimator
     diagnostics.rs           — fitted-model validity checks
   online/
-    mod.rs                   — causal streaming filter state machine
+    mod.rs                   — causal streaming filter (log-space, numerically stable)
   detector/
     hard_switch.rs           — Hard Switch detector
     posterior_transition.rs  — Posterior Transition detector
@@ -314,13 +391,16 @@ src/
   real_eval/
     route_a.rs               — proxy event alignment
     route_b.rs               — segmentation self-consistency
+    report.rs                — combined Route A + B report
   experiments/
     config.rs                — ExperimentConfig (fully serialisable)
     runner.rs                — ExperimentRunner<B> + ExperimentBackend trait
-    synthetic_backend.rs     — SyntheticBackend: real EM + detection + evaluation
-    batch.rs                 — BatchConfig + run_batch
-    result.rs                — ExperimentResult, RunStatus, EvaluationSummary, FittedParamsSummary
-    registry.rs              — registered experiment definitions
+    synthetic_backend.rs     — SyntheticBackend: EM + detection + evaluation
+    real_backend.rs          — RealBackend: DuckDB load, 70/15/15 split, Route A+B eval
+    dry_run_backend.rs       — DryRunBackend: config validation without EM
+    batch.rs                 — BatchConfig + run_batch + batch_summary.json
+    result.rs                — ExperimentResult, RunStatus, EvaluationSummary
+    registry.rs              — 6 registered experiment definitions
     search.rs                — param-search grid (detector threshold / persistence)
     artifact.rs              — run directory layout + snapshot helpers
   reporting/
@@ -369,4 +449,4 @@ src/
 cargo test
 ```
 
-323 tests covering all core components: filter/smoother correctness, EM convergence, detector alarm logic, calibration mapping, benchmark matching, experiment runner orchestration, and artifact serialisation.
+334 tests covering all core components: filter/smoother correctness, EM convergence, detector alarm logic, calibration mapping, benchmark matching, experiment runner orchestration, real-backend data pipeline, and artifact serialisation.

@@ -47,9 +47,9 @@ Primary key: `(symbol, interval, date)`
 Each `store()` call does a full replace for that series:
 
 1. `DELETE` all existing rows for `(symbol, interval)`
-2. `INSERT` the new data points
+2. Bulk-insert the new data points via DuckDB's `Appender`
 
-This keeps the cache in sync with the API response without manual diff logic.
+Bulk insert uses the `Appender` API with `append_row(params![symbol, interval, date, value, fetched_at])` + `flush()`. This is significantly faster than individual `INSERT` statements for large intraday series (e.g., 378k rows for SPY 15min).
 
 ## Schema migration
 
@@ -68,12 +68,14 @@ This is a no-op when the column is already `TIMESTAMP`. It upgrades existing dat
 CommodityCache::open(path: &str) -> anyhow::Result<Self>
 
 // Timestamp of the most recent fetch for a series, or None if uncached.
+// Uses ORDER BY fetched_at DESC LIMIT 1 rather than MAX() to avoid a
+// DuckDB INTERNAL error on empty tables with .query_row().
 cache.last_fetched(symbol, interval) -> anyhow::Result<Option<NaiveDateTime>>
 
 // Load a full series from the cache. Returns None if not present.
 cache.load(symbol, interval) -> anyhow::Result<Option<CommodityResponse>>
 
-// Persist a full series response (replaces existing data).
+// Persist a full series response (replaces existing data via Appender bulk insert).
 cache.store(symbol, interval, &response) -> anyhow::Result<usize>
 
 // Summary row for every series in the cache.

@@ -52,6 +52,11 @@ pub fn registry() -> Vec<RegisteredExperiment> {
             description: "WTI daily  — Surprise detector on spot-price log-returns (real data)",
             build: real_wti_daily_surprise,
         },
+        RegisteredExperiment {
+            id: "real_spy_intraday_hard_switch",
+            description: "SPY 15min  — HardSwitch on intraday adj-close log-returns (2022-2025)",
+            build: real_spy_intraday_hard_switch,
+        },
     ]
 }
 
@@ -255,6 +260,66 @@ pub fn real_wti_daily_surprise() -> ExperimentConfig {
         cooldown: 10,
     };
     cfg
+}
+
+/// SPY 15-minute intraday — HardSwitch on log-returns.
+///
+/// Uses 2022-01-01 to 2025-12-31 to keep the EM training set tractable
+/// (~30,000 bars).  Proxy events from `data/proxy_events/spy.json`.
+pub fn real_spy_intraday_hard_switch() -> ExperimentConfig {
+    ExperimentConfig {
+        meta: RunMetaConfig {
+            run_label: "real_spy_intraday_hard_switch".to_string(),
+            notes: Some(
+                "SPY 15min intraday | HardSwitch | adj-close log-returns | Route A+B evaluation"
+                    .to_string(),
+            ),
+        },
+        mode: ExperimentMode::Real,
+        data: DataConfig::Real {
+            asset: "SPY".to_string(),
+            frequency: RealFrequency::Intraday15m,
+            dataset_id: "spy_intraday_15min".to_string(),
+            date_start: Some("2022-01-01".to_string()),
+            date_end: Some("2025-12-31".to_string()),
+        },
+        features: FeatureConfig {
+            family: FeatureFamilyConfig::LogReturn,
+            scaling: ScalingPolicyConfig::ZScore,
+            session_aware: true,
+        },
+        model: ModelConfig {
+            k_regimes: 2,
+            training: TrainingMode::FitOffline,
+            em_max_iter: 200,
+            em_tol: 1e-6,
+        },
+        detector: DetectorConfig {
+            detector_type: DetectorType::HardSwitch,
+            threshold: 0.55,
+            persistence_required: 3,
+            cooldown: 10,
+        },
+        evaluation: EvaluationConfig::Real {
+            proxy_events_path: "data/proxy_events/spy.json".to_string(),
+            route_a_point_pre_bars: 20,
+            route_a_point_post_bars: 40,
+            route_a_causal_only: false,
+            route_b_min_segment_len: 20,
+        },
+        output: OutputConfig {
+            root_dir: "./runs".to_string(),
+            write_json: true,
+            write_csv: true,
+            save_traces: true,
+        },
+        reproducibility: ReproducibilityConfig {
+            seed: None,
+            deterministic_run_id: false,
+            save_config_snapshot: true,
+            record_git_info: false,
+        },
+    }
 }
 
 #[cfg(test)]

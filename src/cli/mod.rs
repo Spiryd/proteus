@@ -192,6 +192,8 @@ pub async fn run_direct(args: Vec<String>) -> anyhow::Result<()> {
     match cmd {
         "run-experiment" => direct_run_experiment(&args),
         "run-batch" => direct_run_batch(&args),
+        "run-real" => direct_run_real(&args),
+        "calibrate" => direct_calibrate(&args),
         "e2e" => cmd_e2e_run(),
         "param-search" => {
             let id = flag_value(&args, "--id").unwrap_or_else(|| "surprise".to_string());
@@ -1141,6 +1143,33 @@ fn direct_run_batch(args: &[String]) -> anyhow::Result<()> {
             println!("{line}");
         }
     }
+
+    // Save batch_summary.json if --save is specified or always.
+    let save_dir = flag_value(&args, "--save");
+    {
+        let out_dir = save_dir.as_deref().unwrap_or("./runs");
+        let _ = fs::create_dir_all(out_dir);
+        let run_summaries: Vec<_> = batch.run_results.iter().map(|r| {
+            serde_json::json!({
+                "run_id": r.metadata.run_id,
+                "run_label": r.metadata.run_label,
+                "mode": r.metadata.mode,
+                "status": format!("{:?}", r.status),
+                "evaluation": r.evaluation_summary,
+            })
+        }).collect();
+        let batch_summary = serde_json::json!({
+            "n_runs": batch.run_results.len(),
+            "n_success": batch.n_success,
+            "n_failed": batch.n_failed,
+            "runs": run_summaries,
+        });
+        let summary_path = PathBuf::from(out_dir).join("batch_summary.json");
+        if let Ok(json) = serde_json::to_string_pretty(&batch_summary) {
+            let _ = fs::write(&summary_path, json);
+            println!("\nBatch summary written to: {}", summary_path.display());
+        }
+    }
     Ok(())
 }
 
@@ -1156,6 +1185,289 @@ fn direct_inspect(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Run a real-data experiment by registry ID using `RealBackend`.
+///
+/// Usage: `run-real --id <experiment_id> [--cache <path>] [--save <out_dir>]`
+///
+/// The `--save` flag copies the run directory to `<out_dir>` for archiving.
+fn direct_run_real(args: &[String]) -> anyhow::Result<()> {
+    let id = flag_value(args, "--id")
+        .ok_or_else(|| anyhow::anyhow!("Usage: run-real --id <experiment_id> [--cache <path>] [--save <out_dir>]"))?;
+    let cache = flag_value(args, "--cache")
+        .unwrap_or_else(|| "data/commodities.duckdb".to_string());
+    let save_to = flag_value(args, "--save");
+
+    let reg = crate::experiments::registry::registry();
+    let entry = reg.iter().find(|e| e.id == id)
+        .ok_or_else(|| {
+            let known = reg.iter().map(|e| e.id).collect::<Vec<_>>().join(", ");
+            anyhow::anyhow!("Unknown experiment id '{id}'. Known: {known}")
+        })?;
+
+    let cfg = (entry.build)();
+    println!();
+    print_config_block(&cfg);
+    println!();
+    println!("Cache : {cache}");
+    println!();
+    println!("Running '{}'...", cfg.meta.run_label);
+    println!("(Loading data and running EM — this may take a few seconds.)");
+    println!();
+
+    let backend = crate::experiments::real_backend::RealBackend::new(&cache);
+    let runner = crate::experiments::runner::ExperimentRunner::new(backend);
+    let result = runner.run(cfg.clone());
+
+    println!();
+    println!("Pipeline:");
+    print_stage_log(&cfg, &result);
+    println!();
+    print_run_result_summary(&result);
+
+    if let Some(crate::experiments::result::EvaluationSummary::Real {
+        event_coverage,
+        alarm_relevance,
+        segmentation_coherence,
+    }) = &result.evaluation_summary
+    {
+        println!();
+        println!("Real-Eval Metrics:");
+        println!("  Route A  event_coverage          = {:.4}", event_coverage);
+        println!("  Route A  alarm_relevance          = {:.4}", alarm_relevance);
+        println!("  Route B  segmentation_coherence   = {:.4}", segmentation_coherence);
+    }
+
+    // Show model parameters.
+    if let Some(ms) = &result.model_summary
+        && let Some(fp) = &ms.fitted_params
+    {
+        println!();
+        println!("Fitted Model:");
+        println!("  K={}  LL={:.4}  iter={}  converged={}", ms.k_regimes, fp.log_likelihood, fp.n_iter, fp.converged);
+        for j in 0..ms.k_regimes {
+            println!("  Regime {j}: mu={:.6}  var={:.6}  pi={:.4}", fp.means[j], fp.variances[j], fp.pi[j]);
+        }
+        for i in 0..ms.k_regimes {
+            let row: Vec<String> = fp.transition[i].iter().map(|v| format!("{v:.4}")).collect();
+            println!("  Trans[{i}]: [{}]", row.join(", "));
+        }
+    }
+
+    // List artifact paths.
+    if !result.artifacts.is_empty() {
+        println!();
+        println!("Artifacts:");
+        for a in &result.artifacts {
+            println!("  {} : {}", a.name, a.path);
+        }
+    }
+
+    for w in &result.warnings {
+        println!("Warning: {w}");
+    }
+
+    // Optionally copy artifacts to a save directory.
+    if let Some(ref save_dir) = save_to {
+        if let Some(first_art) = result.artifacts.first() {
+            let run_path = PathBuf::from(&first_art.path);
+            if let Some(run_dir_path) = run_path.parent() {
+                let dest = PathBuf::from(save_dir);
+                let _ = fs::create_dir_all(&dest);
+                for art in &result.artifacts {
+                    let src = PathBuf::from(&art.path);
+                    if src.exists() {
+                        let fname = src.file_name().unwrap_or_default();
+                        let _ = fs::copy(&src, dest.join(fname));
+                    }
+                }
+                println!();
+                println!("Artifacts copied to: {save_dir}");
+                let _ = run_dir_path; // suppress unused warning
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Run calibration for a synthetic experiment and save JSON artifacts.
+///
+/// Usage: `calibrate --id <experiment_id> [--out <dir>]`
+fn direct_calibrate(args: &[String]) -> anyhow::Result<()> {
+    use crate::calibration::{
+        CalibrationDatasetTag, CalibrationMappingConfig, CalibrationPartition,
+        EmpiricalCalibrationProfile, SummaryTargetSet, VerificationTolerance,
+        run_calibration_workflow, summarize_observation_values,
+    };
+    use crate::experiments::config::{ExperimentMode, FeatureFamilyConfig};
+    use crate::experiments::runner::ExperimentBackend;
+    use crate::features::FeatureFamily;
+
+    let id = flag_value(args, "--id")
+        .ok_or_else(|| anyhow::anyhow!("Usage: calibrate --id <experiment_id> [--out <dir>]"))?;
+    let out_dir = flag_value(args, "--out")
+        .unwrap_or_else(|| format!("./runs/calibration/{id}"));
+
+    let reg = crate::experiments::registry::registry();
+    let entry = reg.iter().find(|e| e.id == id)
+        .ok_or_else(|| anyhow::anyhow!("Unknown experiment id '{id}'"))?;
+
+    let cfg = (entry.build)();
+    if cfg.mode != ExperimentMode::Synthetic {
+        anyhow::bail!("Calibration is only available for Synthetic experiments. '{id}' is {:?}.", cfg.mode);
+    }
+
+    println!();
+    println!("Calibrating '{id}'...");
+    println!("(Simulating synthetic data and computing empirical targets.)");
+    println!();
+
+    let backend = crate::experiments::synthetic_backend::SyntheticBackend::new();
+    let data = backend.resolve_data(&cfg)?;
+    let features = backend.build_features(&cfg, &data)?;
+
+    if features.observations.is_empty() {
+        anyhow::bail!("No feature observations produced — cannot calibrate.");
+    }
+
+    let train_obs = &features.observations[..features.train_n.min(features.observations.len())];
+    let empirical_summary = summarize_observation_values(train_obs);
+
+    let tag = CalibrationDatasetTag {
+        asset: match &cfg.data {
+            DataConfig::Synthetic { scenario_id, .. } => format!("synthetic:{scenario_id}"),
+            DataConfig::Real { asset, .. } => asset.clone(),
+        },
+        frequency: "synthetic".to_string(),
+        feature_label: format!("{:?}", cfg.features.family),
+        partition: CalibrationPartition::TrainOnly,
+    };
+    let feature_family = match &cfg.features.family {
+        FeatureFamilyConfig::LogReturn => FeatureFamily::LogReturn,
+        FeatureFamilyConfig::AbsReturn => FeatureFamily::AbsReturn,
+        FeatureFamilyConfig::SquaredReturn => FeatureFamily::SquaredReturn,
+        FeatureFamilyConfig::RollingVol { window, session_reset } => {
+            FeatureFamily::RollingVol { window: *window, session_reset: *session_reset }
+        }
+        FeatureFamilyConfig::StandardizedReturn { window, epsilon, session_reset } => {
+            FeatureFamily::StandardizedReturn { window: *window, epsilon: *epsilon, session_reset: *session_reset }
+        }
+    };
+
+    let profile = EmpiricalCalibrationProfile {
+        tag,
+        feature_family,
+        targets: SummaryTargetSet::Full,
+        summary: empirical_summary.clone(),
+    };
+
+    let seed = cfg.reproducibility.seed.unwrap_or(42);
+    let mapping = CalibrationMappingConfig {
+        k: cfg.model.k_regimes,
+        horizon: match &cfg.data {
+            DataConfig::Synthetic { horizon, .. } => *horizon,
+            DataConfig::Real { .. } => 2000,
+        },
+        ..CalibrationMappingConfig::default()
+    };
+
+    let report = run_calibration_workflow(
+        profile,
+        mapping,
+        VerificationTolerance::default(),
+        seed,
+    )?;
+    let view = report.view();
+
+    println!("Calibration Report");
+    println!("------------------");
+    println!("  Asset        : {}", view.asset);
+    println!("  Feature      : {}", view.feature_label);
+    println!("  Horizon      : {}", view.horizon);
+    println!("  Empirical n  : {}", view.empirical_n);
+    println!("  Synthetic n  : {}", view.synthetic_n);
+    println!("  Verification : {}", if view.verification_passed { "PASSED" } else { "FAILED" });
+    for note in &view.verification_notes { println!("  Note: {note}"); }
+    let s = &report.empirical_profile.summary;
+    println!("  Empirical: mean={:.6}  var={:.6}  std={:.6}", s.mean, s.variance, s.std_dev);
+    println!("  acf1={:.4}  abs_acf1={:.4}  sign_change_rate={:.4}", s.acf1, s.abs_acf1, s.sign_change_rate);
+
+    // Save artifacts.
+    fs::create_dir_all(&out_dir)?;
+
+    // calibration_summary.json
+    let cal_summary = serde_json::json!({
+        "experiment_id": id,
+        "asset": view.asset,
+        "feature_label": view.feature_label,
+        "horizon": view.horizon,
+        "empirical_n": view.empirical_n,
+        "synthetic_n": view.synthetic_n,
+        "verification_passed": view.verification_passed,
+        "verification_notes": view.verification_notes,
+        "expected_durations": view.expected_durations,
+        "empirical": {
+            "mean": s.mean, "variance": s.variance, "std_dev": s.std_dev,
+            "q01": s.q01, "q05": s.q05, "q50": s.q50, "q95": s.q95, "q99": s.q99,
+            "acf1": s.acf1, "abs_acf1": s.abs_acf1, "sign_change_rate": s.sign_change_rate,
+            "high_episode_mean_dur": s.high_episode_mean_duration,
+            "low_episode_mean_dur": s.low_episode_mean_duration,
+        },
+        "calibrated_model": {
+            "k": report.calibrated.model_params.k,
+            "pi": report.calibrated.model_params.pi.clone(),
+            "transition": (0..report.calibrated.model_params.k)
+                .map(|i| report.calibrated.model_params.transition_row(i).to_vec())
+                .collect::<Vec<_>>(),
+            "means": report.calibrated.model_params.means.clone(),
+            "variances": report.calibrated.model_params.variances.clone(),
+        },
+    });
+    let cal_path = PathBuf::from(&out_dir).join("calibration_summary.json");
+    fs::write(&cal_path, serde_json::to_string_pretty(&cal_summary)?)?;
+    println!("\nSaved: {}", cal_path.display());
+
+    // synthetic_vs_empirical_summary.json
+    let mp = &report.calibrated.model_params;
+    let vs_summary = serde_json::json!({
+        "empirical_mean": s.mean,
+        "empirical_variance": s.variance,
+        "empirical_acf1": s.acf1,
+        "calibrated_regime_means": mp.means.clone(),
+        "calibrated_regime_variances": mp.variances.clone(),
+        "calibrated_regime_pi": mp.pi.clone(),
+        "calibrated_expected_durations": view.expected_durations,
+        "horizon": view.horizon,
+        "verification_passed": view.verification_passed,
+    });
+    let vs_path = PathBuf::from(&out_dir).join("synthetic_vs_empirical_summary.json");
+    fs::write(&vs_path, serde_json::to_string_pretty(&vs_summary)?)?;
+    println!("Saved: {}", vs_path.display());
+
+    // calibrated_scenario.json (the calibrated scenario parameters)
+    let params = &report.calibrated.model_params;
+    let scenario_json = serde_json::json!({
+        "scenario_type": "calibrated_from_empirical",
+        "source_experiment": id,
+        "feature_family": format!("{:?}", cfg.features.family),
+        "k_regimes": params.k,
+        "horizon": view.horizon,
+        "pi": params.pi.clone(),
+        "regime_means": params.means.clone(),
+        "regime_variances": params.variances.clone(),
+        "transition_matrix": (0..params.k)
+            .map(|i| params.transition_row(i).to_vec())
+            .collect::<Vec<_>>(),
+    });
+    let sc_path = PathBuf::from(&out_dir).join("calibrated_scenario.json");
+    fs::write(&sc_path, serde_json::to_string_pretty(&scenario_json)?)?;
+    println!("Saved: {}", sc_path.display());
+
+    println!();
+    println!("Calibration artifacts written to: {out_dir}");
+    Ok(())
+}
+
 fn print_help() {
     println!("Proteus — Markov-Switching Changepoint Detection Platform");
     println!();
@@ -1165,10 +1477,12 @@ fn print_help() {
     println!("  cargo run -- <subcommand> [options]   # direct command");
     println!();
     println!("SUBCOMMANDS:");
-    println!("  e2e                                          Run all registered experiments (verbose)");
+    println!("  e2e                                          Run all registered synthetic experiments");
     println!("  param-search  [--id <experiment_id>]         Grid search over detector params");
-    println!("  run-experiment  --config <path.json>         Run single experiment from file");
+    println!("  run-experiment  --config <path.json>         Run single experiment (DryRun/Synthetic)");
     println!("  run-batch       --config a.json [...]        Run batch from files");
+    println!("  run-real        --id <id> [--cache <path>]   Run a real-data experiment by registry ID");
+    println!("  calibrate       --id <id> [--out <dir>]      Calibrate a synthetic experiment");
     println!("  inspect         --dir <run-directory>        Inspect run artifacts");
     println!("  status          [--config <path.toml>]       Show data cache status");
     println!("  help                                         Show this message");

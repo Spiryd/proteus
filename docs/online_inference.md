@@ -91,8 +91,13 @@ $$\log w_j = \log f_j(y_t) + \log \alpha_{t|t-1}(j)$$
 
 $$\log c_t = \log\!\sum_j \exp\!\bigl(\log w_j\bigr)$$
 
-using the log-sum-exp identity to avoid underflow.  The final filtered
-probabilities are obtained by a single exponentiation and normalization.
+using the log-sum-exp identity to avoid underflow.
+
+**Step 4 is also computed in log-space:**
+
+$$\alpha_{t|t}(j) = \exp\!\bigl(\log w_j - \log c_t\bigr)$$
+
+This formulation is numerically robust even when $c_t = \exp(\log c_t)$ underflows to exactly 0 in `f64` — which can occur for extreme observations in high-frequency (e.g., 15-min intraday) data. Computing the ratio in log-space avoids the division-by-zero that would otherwise arise. The scalar $c_t$ is still computed from `exp(log_ct)` for the `OnlineStepResult` field (it may be 0 for extreme steps; this is recorded but does not cause an error).
 
 ---
 

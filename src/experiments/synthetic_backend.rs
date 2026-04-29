@@ -74,6 +74,8 @@ impl ExperimentBackend for SyntheticBackend {
                     changepoint_truth: Some(changepoints),
                     train_n,
                     timestamps: vec![],
+                    split_summary_json: None,
+                    validation_report_json: None,
                 })
             }
             DataConfig::Real { dataset_id, .. } => {
@@ -85,6 +87,8 @@ impl ExperimentBackend for SyntheticBackend {
                     changepoint_truth: None,
                     train_n: 0,
                     timestamps: vec![],
+                    split_summary_json: None,
+                    validation_report_json: None,
                 })
             }
         }
@@ -226,6 +230,7 @@ impl ExperimentBackend for SyntheticBackend {
             n_true_positive: Some(metrics.n_true_positive),
             n_false_positive: Some(metrics.n_false_positive),
             n_missed: Some(metrics.n_missed),
+            per_event_delays: match_result.delays(),
         })
     }
 
