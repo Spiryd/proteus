@@ -842,6 +842,7 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
 
         #[cfg(not(test))]
         {
+            try_register_plot_font();
             let plot_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 generate_plots(
                     &cfg,
@@ -985,6 +986,29 @@ fn generate_run_id(cfg: &ExperimentConfig, config_hash: u64) -> String {
         format!("run_{:016x}_{seed}", config_hash)
     } else {
         format!("run_{:016x}_{:x}", config_hash, now_epoch_ms())
+    }
+}
+
+/// Try to register a Windows system font as "sans-serif" so plotters ab_glyph
+/// can render text.  Called once before each plot batch.  Silently does nothing
+/// if no suitable font file is found.
+#[cfg(not(test))]
+fn try_register_plot_font() {
+    use plotters::style::FontStyle;
+    let candidates = [
+        r"C:\Windows\Fonts\arial.ttf",
+        r"C:\Windows\Fonts\calibri.ttf",
+        r"C:\Windows\Fonts\segoeui.ttf",
+        r"C:\Windows\Fonts\verdana.ttf",
+        r"C:\Windows\Fonts\tahoma.ttf",
+    ];
+    for path in &candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+            let _ = plotters::style::register_font("sans-serif", FontStyle::Normal, leaked);
+            let _ = plotters::style::register_font("sans-serif", FontStyle::Bold, leaked);
+            return;
+        }
     }
 }
 

@@ -31,13 +31,55 @@ impl Default for ParamGrid {
 }
 
 impl ParamGrid {
+    /// Grid tuned for `HardSwitch` real-data experiments.
+    /// Threshold sweeps [0.30, 0.80] — the posterior-majority range.
+    pub fn for_real_hard_switch() -> Self {
+        Self {
+            thresholds: vec![0.30, 0.40, 0.50, 0.55, 0.60, 0.65, 0.70, 0.80],
+            persistence_values: vec![1, 2, 3, 5],
+            cooldown_values: vec![0, 3, 5, 10],
+        }
+    }
+
+    /// Grid tuned for `Surprise` real-data experiments.
+    /// Threshold sweeps [1.0, 6.0] — surprise score (z-score-like) range.
+    pub fn for_real_surprise() -> Self {
+        Self {
+            thresholds: vec![1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0],
+            persistence_values: vec![1, 2, 3, 5],
+            cooldown_values: vec![0, 5, 10, 20],
+        }
+    }
+
+    /// Grid tuned for `PosteriorTransition` real-data experiments.
+    pub fn for_real_posterior_transition() -> Self {
+        Self {
+            thresholds: vec![0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50],
+            persistence_values: vec![1, 2, 3],
+            cooldown_values: vec![0, 3, 5, 10],
+        }
+    }
+}
+
+impl ParamGrid {
     pub fn n_points(&self) -> usize {
         self.thresholds.len() * self.persistence_values.len() * self.cooldown_values.len()
+    }
+
+    /// Choose the default real grid based on detector type name.
+    pub fn for_real_detector(detector_type: &super::config::DetectorType) -> Self {
+        match detector_type {
+            super::config::DetectorType::HardSwitch => Self::for_real_hard_switch(),
+            super::config::DetectorType::Surprise => Self::for_real_surprise(),
+            super::config::DetectorType::PosteriorTransition => {
+                Self::for_real_posterior_transition()
+            }
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Result type
+// Result types
 // ---------------------------------------------------------------------------
 
 /// Outcome for a single grid point.
@@ -54,9 +96,27 @@ pub struct SearchPoint {
     pub status: RunStatus,
 }
 
-// ---------------------------------------------------------------------------
-// Search driver
-// ---------------------------------------------------------------------------
+/// Full result from an optimization run: all scored grid points + best config.
+#[derive(Debug, Clone)]
+pub struct OptimizeResult {
+    /// All search points, sorted by score descending.
+    pub points: Vec<SearchPoint>,
+    /// The best-scoring `ExperimentConfig` (ready to hand to a runner).
+    pub best_config: ExperimentConfig,
+    /// Number of grid points evaluated.
+    pub n_evaluated: usize,
+}
+
+/// Apply the best `SearchPoint`'s params onto `base` and return the patched config.
+pub fn apply_best(base: &ExperimentConfig, best: &SearchPoint) -> ExperimentConfig {
+    let mut cfg = base.clone();
+    cfg.detector.threshold = best.threshold;
+    cfg.detector.persistence_required = best.persistence_required;
+    cfg.detector.cooldown = best.cooldown;
+    cfg.reproducibility.deterministic_run_id = false;
+    cfg
+}
+
 
 /// Run a full grid search over detector parameters.
 ///
@@ -104,9 +164,73 @@ pub fn grid_search<B: ExperimentBackend>(
     points
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+/// High-level optimization driver.
+///
+/// Runs a full grid search using the detector-appropriate grid, then returns
+/// an [`OptimizeResult`] with all scored points and the best-patched config.
+///
+/// `progress_cb` is called before each grid point with `(point_index, total)`.
+pub fn optimize<B: ExperimentBackend, F>(
+    runner: &ExperimentRunner<B>,
+    base: &ExperimentConfig,
+    grid: &ParamGrid,
+    mut progress_cb: F,
+) -> OptimizeResult
+where
+    F: FnMut(usize, usize),
+{
+    let total = grid.n_points();
+    let mut idx = 0usize;
+    let mut points = Vec::with_capacity(total);
+
+    for &threshold in &grid.thresholds {
+        for &persistence_required in &grid.persistence_values {
+            for &cooldown in &grid.cooldown_values {
+                progress_cb(idx, total);
+                idx += 1;
+
+                let mut cfg = base.clone();
+                cfg.detector.threshold = threshold;
+                cfg.detector.persistence_required = persistence_required;
+                cfg.detector.cooldown = cooldown;
+                cfg.reproducibility.deterministic_run_id = false;
+                // During grid search disable artifact writes for speed.
+                cfg.output.write_json = false;
+                cfg.output.write_csv = false;
+                cfg.output.save_traces = false;
+
+                let result = runner.run(cfg);
+                let (coverage, precision_like, n_alarms) = extract_metrics(&result);
+                let score = combined_score(coverage, precision_like);
+
+                points.push(SearchPoint {
+                    threshold,
+                    persistence_required,
+                    cooldown,
+                    score,
+                    n_alarms,
+                    coverage,
+                    precision_like,
+                    status: result.status,
+                });
+            }
+        }
+    }
+
+    points.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+    let best_config = points
+        .first()
+        .map(|p| apply_best(base, p))
+        .unwrap_or_else(|| base.clone());
+
+    OptimizeResult {
+        n_evaluated: points.len(),
+        points,
+        best_config,
+    }
+}
+
 
 fn extract_metrics(result: &ExperimentResult) -> (f64, f64, usize) {
     let n_alarms = result

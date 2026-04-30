@@ -89,7 +89,8 @@ cargo run -- run-experiment  --config experiment_config.json
 cargo run -- run-batch       --config a.json --config b.json [--save <dir>]
 cargo run -- run-real        --id <experiment_id> [--cache <path.duckdb>] [--save <dir>]
 cargo run -- calibrate       --id <experiment_id> [--out <dir>]
-cargo run -- param-search    --id <experiment_id>         # grid search over detector params
+cargo run -- param-search    --id <experiment_id>         # grid search (DryRun)
+cargo run -- optimize        --id <experiment_id> [--cache <path>] [--save <dir>] [--top <n>]
 cargo run -- inspect         --dir ./runs/real/my_run/run_001
 cargo run -- status          [--config path/to/config.toml]
 cargo run -- help
@@ -105,7 +106,7 @@ Runs a real-data experiment from the registry by ID, loading price data from the
 cargo run -- run-real --id real_spy_daily_hard_switch --cache data/commodities.duckdb --save ./output
 ```
 
-Artifacts (16 files) are written to `runs/real/<id>/<run_id>/` and optionally copied to `--save`.
+Artifacts (20 files, including plots) are written to `runs/real/<id>/<run_id>/` and optionally copied to `--save`.
 
 #### `calibrate`
 
@@ -116,6 +117,39 @@ cargo run -- calibrate --id hard_switch --out ./output/calibration
 ```
 
 Produces `calibration_summary.json`, `synthetic_vs_empirical_summary.json`, and `calibrated_scenario.json`.
+
+#### `optimize`
+
+Two-phase parameter search for real-data experiments:
+
+1. **Phase 1 — Grid search** (artifact writes disabled for speed): sweeps a detector-appropriate dense grid over `threshold`, `persistence_required`, and `cooldown` using real data and the full EM pipeline. Ranks all grid points by a combined coverage + precision score.
+2. **Phase 2 — Full E2E run**: re-runs with the best-scoring config with full artifact output (JSON, CSV, plots).
+
+```
+cargo run -- optimize --id real_spy_daily_hard_switch
+cargo run -- optimize --id real_wti_daily_surprise --save ./runs/optimize/wti --top 15
+```
+
+Default grids by detector type:
+
+| Detector | Threshold range | Persistence | Cooldown | Grid points |
+|----------|----------------|-------------|----------|-------------|
+| `HardSwitch` | 0.30 – 0.80 | 1, 2, 3, 5 | 0, 3, 5, 10 | 128 |
+| `Surprise` | 1.0 – 6.0 | 1, 2, 3, 5 | 0, 5, 10, 20 | 128 |
+| `PosteriorTransition` | 0.10 – 0.50 | 1, 2, 3 | 0, 3, 5, 10 | 84 |
+
+Artifacts written to `--save` (default `./runs/optimize/<id>/`):
+
+| File | Contents |
+|------|----------|
+| `search_report.json` | Full ranked grid — all N points with scores |
+| `search_summary.txt` | Human-readable top-N table + best params |
+| `result.json` | Full `ExperimentResult` from the best-config run |
+| `config.snapshot.json` | Exact `ExperimentConfig` used for the best run |
+| `signal_alarms.png` | Alarm timeline plot |
+| `detector_scores.png` | Detector score trace |
+| `regime_posteriors.png` | Filtered posterior heatmap |
+| `*.csv`, remaining `*.json` | Standard run artifact set |
 
 ---
 
@@ -401,7 +435,7 @@ src/
     batch.rs                 — BatchConfig + run_batch + batch_summary.json
     result.rs                — ExperimentResult, RunStatus, EvaluationSummary
     registry.rs              — 6 registered experiment definitions
-    search.rs                — param-search grid (detector threshold / persistence)
+    search.rs                — param-search grid + optimize() two-phase search driver
     artifact.rs              — run directory layout + snapshot helpers
   reporting/
     artifact.rs              — ArtifactRootConfig, RunArtifactLayout

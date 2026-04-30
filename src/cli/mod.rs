@@ -199,6 +199,7 @@ pub async fn run_direct(args: Vec<String>) -> anyhow::Result<()> {
             let id = flag_value(&args, "--id").unwrap_or_else(|| "surprise".to_string());
             cmd_param_search(&id)
         }
+        "optimize" => direct_optimize(&args),
         "inspect" => direct_inspect(&args),
         "status" => {
             let config_path =
@@ -1468,6 +1469,219 @@ fn direct_calibrate(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Grid-search for optimal detector parameters on a real-data experiment,
+/// then run a full E2E with the best config and write a search report.
+///
+/// Usage: `optimize --id <experiment_id> [--cache <path>] [--save <dir>] [--top <n>]`
+///
+/// Artifacts written to `<save>` (default `./runs/optimize/<id>/`):
+///   search_report.json   — full ranked grid (all points)
+///   search_summary.txt   — human-readable top-N table + best params
+///   result.json          — full ExperimentResult from the best-config run
+///   + all standard run artifacts (config.snapshot.json, plots, CSV traces, …)
+fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
+    use crate::experiments::search::{ParamGrid, optimize};
+    use std::io::Write;
+
+    let id = flag_value(args, "--id").ok_or_else(|| {
+        anyhow::anyhow!(
+            "Usage: optimize --id <experiment_id> [--cache <path>] [--save <dir>] [--top <n>]"
+        )
+    })?;
+    let cache = flag_value(args, "--cache")
+        .unwrap_or_else(|| "data/commodities.duckdb".to_string());
+    let save_dir = flag_value(args, "--save")
+        .unwrap_or_else(|| format!("./runs/optimize/{id}"));
+    let top_n: usize = flag_value(args, "--top")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+
+    let reg = crate::experiments::registry::registry();
+    let entry = reg
+        .iter()
+        .find(|e| e.id == id)
+        .ok_or_else(|| {
+            let known = reg.iter().map(|e| e.id).collect::<Vec<_>>().join(", ");
+            anyhow::anyhow!("Unknown experiment id '{id}'. Known: {known}")
+        })?;
+
+    let base_cfg = (entry.build)();
+
+    // Choose the grid appropriate for this detector type.
+    let grid = ParamGrid::for_real_detector(&base_cfg.detector.detector_type);
+
+    println!();
+    println!("  Optimize — experiment : {id}");
+    println!("  Detector              : {:?}", base_cfg.detector.detector_type);
+    println!("  Grid size             : {} points ({} thresholds × {} persistence × {} cooldown)",
+        grid.n_points(),
+        grid.thresholds.len(),
+        grid.persistence_values.len(),
+        grid.cooldown_values.len(),
+    );
+    println!("  Thresholds            : {:?}", grid.thresholds);
+    println!("  Persistence           : {:?}", grid.persistence_values);
+    println!("  Cooldown              : {:?}", grid.cooldown_values);
+    println!("  Cache                 : {cache}");
+    println!("  Save to               : {save_dir}");
+    println!();
+    println!("  Phase 1/2 — grid search (all artifact writes disabled for speed)...");
+    println!();
+
+    let backend = crate::experiments::real_backend::RealBackend::new(&cache);
+    let runner = crate::experiments::runner::ExperimentRunner::new(backend);
+
+    let opt = optimize(&runner, &base_cfg, &grid, |idx, total| {
+        if idx % 4 == 0 || idx == total - 1 {
+            print!("\r  [{:>3}/{total}] searching...", idx + 1);
+            let _ = std::io::stdout().flush();
+        }
+    });
+
+    println!("\r  [{n}/{n}] done.         ", n = opt.n_evaluated);
+    println!();
+
+    // Print top-N results.
+    println!("  Top-{top_n} results (sorted by score desc):");
+    println!("  {:>6}  {:>11}  {:>11}  {:>8}  {:>9}  {:>9}  {:>8}",
+        "rank", "threshold", "persistence", "cooldown", "coverage", "precision", "score");
+    println!("  {}", "-".repeat(72));
+    for (rank, pt) in opt.points.iter().take(top_n).enumerate() {
+        println!("  {:>6}  {:>11.4}  {:>11}  {:>8}  {:>9.4}  {:>9.4}  {:>8.4}",
+            rank + 1,
+            pt.threshold,
+            pt.persistence_required,
+            pt.cooldown,
+            pt.coverage,
+            pt.precision_like,
+            pt.score,
+        );
+    }
+    println!();
+
+    let best = opt.points.first().expect("grid must have at least one point");
+    println!("  Best params:");
+    println!("    threshold           = {}", best.threshold);
+    println!("    persistence_required= {}", best.persistence_required);
+    println!("    cooldown            = {}", best.cooldown);
+    println!("    score               = {:.6}", best.score);
+    println!("    coverage            = {:.6}", best.coverage);
+    println!("    precision_like      = {:.6}", best.precision_like);
+    println!("    n_alarms            = {}", best.n_alarms);
+    println!();
+    println!("  Phase 2/2 — full E2E run with best params (artifact writes enabled)...");
+    println!();
+
+    // Re-run with best config, with full artifact output.
+    let mut best_cfg = opt.best_config.clone();
+    best_cfg.output.write_json = true;
+    best_cfg.output.write_csv = true;
+    best_cfg.output.save_traces = true;
+    best_cfg.output.root_dir = save_dir.clone();
+
+    let backend2 = crate::experiments::real_backend::RealBackend::new(&cache);
+    let runner2 = crate::experiments::runner::ExperimentRunner::new(backend2);
+    let result = runner2.run(best_cfg.clone());
+
+    println!("Pipeline:");
+    print_stage_log(&best_cfg, &result);
+    println!();
+    print_run_result_summary(&result);
+
+    if let Some(crate::experiments::result::EvaluationSummary::Real {
+        event_coverage,
+        alarm_relevance,
+        segmentation_coherence,
+    }) = &result.evaluation_summary
+    {
+        println!();
+        println!("  Real-Eval Metrics (best config):");
+        println!("    event_coverage        = {:.4}", event_coverage);
+        println!("    alarm_relevance       = {:.4}", alarm_relevance);
+        println!("    segmentation_coherence= {:.4}", segmentation_coherence);
+    }
+
+    // Write search_report.json
+    fs::create_dir_all(&save_dir)?;
+    let report_points: Vec<_> = opt.points.iter().enumerate().map(|(i, p)| {
+        serde_json::json!({
+            "rank": i + 1,
+            "threshold": p.threshold,
+            "persistence_required": p.persistence_required,
+            "cooldown": p.cooldown,
+            "score": p.score,
+            "coverage": p.coverage,
+            "precision_like": p.precision_like,
+            "n_alarms": p.n_alarms,
+            "status": format!("{:?}", p.status),
+        })
+    }).collect();
+
+    let search_report = serde_json::json!({
+        "experiment_id": id,
+        "detector_type": format!("{:?}", base_cfg.detector.detector_type),
+        "grid": {
+            "thresholds": grid.thresholds,
+            "persistence_values": grid.persistence_values,
+            "cooldown_values": grid.cooldown_values,
+            "n_points": grid.n_points(),
+        },
+        "n_evaluated": opt.n_evaluated,
+        "best": {
+            "threshold": best.threshold,
+            "persistence_required": best.persistence_required,
+            "cooldown": best.cooldown,
+            "score": best.score,
+            "coverage": best.coverage,
+            "precision_like": best.precision_like,
+            "n_alarms": best.n_alarms,
+        },
+        "all_points": report_points,
+    });
+    let report_path = PathBuf::from(&save_dir).join("search_report.json");
+    fs::write(&report_path, serde_json::to_string_pretty(&search_report)?)?;
+    println!("\nSearch report  : {}", report_path.display());
+
+    // Write search_summary.txt
+    let mut summary_lines = vec![
+        format!("Proteus Optimize — {id}"),
+        format!("Date           : {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")),
+        format!("Experiment ID  : {id}"),
+        format!("Detector       : {:?}", base_cfg.detector.detector_type),
+        format!("Grid points    : {}", opt.n_evaluated),
+        String::new(),
+        format!("Best Params:"),
+        format!("  threshold           = {}", best.threshold),
+        format!("  persistence_required= {}", best.persistence_required),
+        format!("  cooldown            = {}", best.cooldown),
+        format!("  score               = {:.6}", best.score),
+        format!("  coverage            = {:.6}", best.coverage),
+        format!("  precision_like      = {:.6}", best.precision_like),
+        format!("  n_alarms            = {}", best.n_alarms),
+        String::new(),
+        format!("Top-{top_n} Grid Results:"),
+        format!("  {:>4}  {:>10}  {:>11}  {:>8}  {:>9}  {:>9}  {:>8}",
+            "rank", "threshold", "persistence", "cooldown", "coverage", "precision", "score"),
+        format!("  {}", "-".repeat(65)),
+    ];
+    for (rank, pt) in opt.points.iter().take(top_n).enumerate() {
+        summary_lines.push(format!(
+            "  {:>4}  {:>10.4}  {:>11}  {:>8}  {:>9.4}  {:>9.4}  {:>8.4}",
+            rank + 1, pt.threshold, pt.persistence_required, pt.cooldown,
+            pt.coverage, pt.precision_like, pt.score,
+        ));
+    }
+    summary_lines.push(String::new());
+    summary_lines.push(format!("Artifacts saved to: {save_dir}"));
+
+    let summary_path = PathBuf::from(&save_dir).join("search_summary.txt");
+    fs::write(&summary_path, summary_lines.join("\n"))?;
+    println!("Search summary : {}", summary_path.display());
+    println!();
+    println!("  Optimization complete.");
+    Ok(())
+}
+
 fn print_help() {
     println!("Proteus — Markov-Switching Changepoint Detection Platform");
     println!();
@@ -1478,7 +1692,9 @@ fn print_help() {
     println!();
     println!("SUBCOMMANDS:");
     println!("  e2e                                          Run all registered synthetic experiments");
-    println!("  param-search  [--id <experiment_id>]         Grid search over detector params");
+    println!("  param-search  [--id <experiment_id>]         Grid search over detector params (DryRun)");
+    println!("  optimize      --id <id> [--cache <path>]     Grid search on real data then full E2E");
+    println!("                [--save <dir>] [--top <n>]");
     println!("  run-experiment  --config <path.json>         Run single experiment (DryRun/Synthetic)");
     println!("  run-batch       --config a.json [...]        Run batch from files");
     println!("  run-real        --id <id> [--cache <path>]   Run a real-data experiment by registry ID");

@@ -10,6 +10,7 @@ Proteus supports two modes:
 cargo run              # interactive menu
 cargo run -- e2e       # run all registered experiments end-to-end
 cargo run -- param-search --id <experiment_id>
+cargo run -- optimize  --id <experiment_id> [--cache <path>] [--save <dir>] [--top <n>]
 cargo run -- run-experiment --config experiment_config.json
 cargo run -- run-batch --config a.json --config b.json [--save <dir>]
 cargo run -- run-real  --id <experiment_id> [--cache <path.duckdb>] [--save <dir>]
@@ -157,6 +158,45 @@ Output files:
 - `calibration_summary.json` — empirical vs synthetic statistics, verification pass/fail
 - `synthetic_vs_empirical_summary.json` — side-by-side comparison table
 - `calibrated_scenario.json` — calibrated `ModelParams` ready for use in synthetic runs
+
+### `optimize`
+
+Two-phase parameter search for real-data experiments. Phase 1 runs a dense detector grid on real data (artifact writes disabled for speed) and ranks every grid point by a combined coverage + precision score. Phase 2 re-runs the best configuration with full artifact output.
+
+```
+cargo run -- optimize --id real_spy_daily_hard_switch
+cargo run -- optimize --id real_wti_daily_surprise --save ./runs/optimize/wti --top 15
+```
+
+Flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--id` | (required) | Registered experiment ID |
+| `--cache` | `data/commodities.duckdb` | DuckDB price cache path |
+| `--save` | `./runs/optimize/<id>/` | Output directory |
+| `--top` | `10` | Rows shown in the printed ranking table |
+
+Default grids by detector type:
+
+| Detector | Threshold range | Grid points |
+|----------|----------------|-------------|
+| `HardSwitch` | 0.30 – 0.80 | 128 |
+| `Surprise` | 1.0 – 6.0 | 128 |
+| `PosteriorTransition` | 0.10 – 0.50 | 84 |
+
+Artifacts written to `--save`:
+
+| File | Contents |
+|------|----------|
+| `search_report.json` | Full ranked grid — all N scored points |
+| `search_summary.txt` | Human-readable top-N table + best params |
+| `result.json` | Full `ExperimentResult` from best-config run |
+| `config.snapshot.json` | Exact `ExperimentConfig` used for best run |
+| `signal_alarms.png` | Alarm timeline (best params) |
+| `detector_scores.png` | Detector score trace (best params) |
+| `regime_posteriors.png` | Filtered posterior heatmap (best params) |
+| All standard CSVs + JSONs | Full run artifact set |
 
 ### `run-batch`
 

@@ -275,3 +275,67 @@ Given `ExperimentConfig`:
 
 This workflow defines the operational backbone for synthetic and real
 Markov-switching detector experiments.
+
+---
+
+## 12. Parameter Optimization (`optimize`)
+
+The `optimize` subcommand provides automated detector parameter search for
+real-data experiments. It runs a two-phase workflow:
+
+### Phase 1 — Grid Search
+
+A `ParamGrid` is selected automatically based on the detector type:
+
+| Detector | Threshold range | Persistence | Cooldown | Points |
+|----------|----------------|-------------|----------|--------|
+| `HardSwitch` | 0.30 – 0.80 | 1, 2, 3, 5 | 0, 3, 5, 10 | 128 |
+| `Surprise` | 1.0 – 6.0 | 1, 2, 3, 5 | 0, 5, 10, 20 | 128 |
+| `PosteriorTransition` | 0.10 – 0.50 | 1, 2, 3 | 0, 3, 5, 10 | 84 |
+
+For each grid point the runner:
+
+1. Patches `threshold`, `persistence_required`, `cooldown` onto the base config.
+2. Disables artifact writes (`write_json = false`, `write_csv = false`, `save_traces = false`) for speed.
+3. Calls `ExperimentRunner::run` on `RealBackend`.
+4. Extracts evaluation metrics and computes a combined score:
+
+$$
+\text{score} = 0.5 \times \text{coverage} + 0.5 \times \text{precision\_like}
+$$
+
+For real-mode evaluation the three Route A + B sub-metrics are averaged before this formula:
+
+$$
+\text{coverage} = \text{precision\_like} = \frac{\text{event\_coverage} + \text{alarm\_relevance} + \text{segmentation\_coherence}}{3}
+$$
+
+All grid points are sorted by score descending. The top-ranked config is selected as `best_config`.
+
+### Phase 2 — Full E2E Run
+
+The best config is re-run with full artifact output:
+
+- `write_json = true`, `write_csv = true`, `save_traces = true`
+- Plots enabled (requires font backend)
+- `root_dir` set to the `--save` destination
+
+### Optimize Artifacts
+
+In addition to the standard run artifact set, `optimize` writes:
+
+| File | Contents |
+|------|----------|
+| `search_report.json` | Full ranked grid — all N scored points |
+| `search_summary.txt` | Human-readable top-N table + best params |
+
+### CLI Usage
+
+```
+cargo run -- optimize --id real_spy_daily_hard_switch
+cargo run -- optimize --id real_wti_daily_surprise --cache data/commodities.duckdb --save ./runs/optimize/wti --top 15
+```
+
+The `optimize` function is exported from `experiments::search` and accepts any
+`ExperimentBackend`, making it testable with `DryRunBackend` and reusable in
+batch workflows.
