@@ -690,7 +690,64 @@ You can call the system practically complete when all of the following are true:
 * [ ] I can inspect previous runs and artifacts later
 * [ ] I can run a small batch experiment
 * [ ] I can reproduce a run from saved config/artifacts
+* [ ] I can run a joint model + detector optimization sweep
 * [ ] I have enough saved outputs to start writing the thesis without rerunning everything
+
+---
+
+## 19. Verify model + detector joint optimization (`--model`)
+
+This checks the extended `optimize` subcommand that sweeps both model architecture
+and detector parameters in a single joint grid search.
+
+**Do**
+
+* Run the joint optimization on one registered real experiment:
+
+  ```
+  cargo run -- optimize --id real_spy_daily_hard_switch --model --top 10
+  ```
+
+* Inspect the terminal output for:
+  * `Mode : joint model + detector`
+  * k_regimes column visible in the top-N table
+  * feature family column visible in the top-N table
+  * Best params block shows `k_regimes` and `feature_family`
+
+* Inspect the saved artifacts in `./runs/optimize/real_spy_daily_hard_switch/`:
+  * `search_report.json` — each entry has `k_regimes` and `feature_family` fields
+  * `search_summary.txt` — table has k_reg and feature columns
+  * Full E2E run artifacts from best config
+
+**Expected result**
+
+* Joint grid runs without error.
+* All `ModelGrid.n_points() × ParamGrid.n_points()` combinations are evaluated.
+* Top-N table and best-params block include model fields.
+* `search_report.json` records model params for every grid point.
+* Phase 2 full run uses the best `(k_regimes, feature_family, threshold, persistence, cooldown)` tuple.
+
+**Tangible artifacts**
+
+* `search_report.json` with `k_regimes` + `feature_family` in every entry
+* `search_summary.txt` with extended columns
+* `result.json`, `config.snapshot.json` from best-config run
+
+**Human checks**
+
+* `k_regimes` in best config matches the winning entry in `search_report.json`.
+* `feature_family` in `config.snapshot.json` matches `feature_family_name` in report.
+* Grid size printed to terminal equals `k_regimes_count × family_count × detector_points`.
+
+**Checklist**
+
+* [ ] Joint optimize command runs without error
+* [ ] Terminal output shows `Mode : joint model + detector`
+* [ ] Top-N table displays `k_regimes` and `feature` columns
+* [ ] `search_report.json` contains `k_regimes` and `feature_family` for all points
+* [ ] Best params block includes `k_regimes` and `feature_family`
+* [ ] Phase 2 full run artifacts present
+* [ ] Config snapshot reflects best model + detector params
 
 ---
 
@@ -716,3 +773,4 @@ Run the verification in this order:
 16. reproducibility check
 17. docs audit
 18. final sign-off
+19. model + detector joint optimization

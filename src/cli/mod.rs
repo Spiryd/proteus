@@ -1480,12 +1480,12 @@ fn direct_calibrate(args: &[String]) -> anyhow::Result<()> {
 ///   result.json          — full ExperimentResult from the best-config run
 ///   + all standard run artifacts (config.snapshot.json, plots, CSV traces, …)
 fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
-    use crate::experiments::search::{ParamGrid, optimize};
+    use crate::experiments::search::{ModelGrid, ParamGrid, feature_family_name, optimize, optimize_full};
     use std::io::Write;
 
     let id = flag_value(args, "--id").ok_or_else(|| {
         anyhow::anyhow!(
-            "Usage: optimize --id <experiment_id> [--cache <path>] [--save <dir>] [--top <n>]"
+            "Usage: optimize --id <experiment_id> [--cache <path>] [--save <dir>] [--top <n>] [--model]"
         )
     })?;
     let cache = flag_value(args, "--cache")
@@ -1495,6 +1495,7 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
     let top_n: usize = flag_value(args, "--top")
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
+    let model_opt = args.iter().any(|a| a == "--model");
 
     let reg = crate::experiments::registry::registry();
     let entry = reg
@@ -1507,17 +1508,45 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
 
     let base_cfg = (entry.build)();
 
-    // Choose the grid appropriate for this detector type.
+    // Choose the detector grid appropriate for this detector type.
     let grid = ParamGrid::for_real_detector(&base_cfg.detector.detector_type);
+
+    // Choose the model grid when --model is requested.
+    let model_grid = if model_opt {
+        Some(if base_cfg.features.session_aware {
+            ModelGrid::for_intraday()
+        } else {
+            ModelGrid::default()
+        })
+    } else {
+        None
+    };
 
     println!();
     println!("  Optimize — experiment : {id}");
     println!("  Detector              : {:?}", base_cfg.detector.detector_type);
-    println!("  Grid size             : {} points ({} thresholds × {} persistence × {} cooldown)",
-        grid.n_points(),
+    println!("  Mode                  : {}",
+        if model_opt { "joint model + detector" } else { "detector only" });
+    if let Some(mg) = &model_grid {
+        println!("  k_regimes values      : {:?}", mg.k_regimes_values);
+        println!("  Feature families      : {}",
+            mg.feature_families.iter().map(|f| feature_family_name(f)).collect::<Vec<_>>().join(", "));
+    }
+    let total_pts = if let Some(mg) = &model_grid {
+        mg.n_points() * grid.n_points()
+    } else {
+        grid.n_points()
+    };
+    println!("  Grid size             : {} points ({} thresholds × {} persistence × {} cooldown{})",
+        total_pts,
         grid.thresholds.len(),
         grid.persistence_values.len(),
         grid.cooldown_values.len(),
+        if let Some(mg) = &model_grid {
+            format!(" × {} model combos", mg.n_points())
+        } else {
+            String::new()
+        },
     );
     println!("  Thresholds            : {:?}", grid.thresholds);
     println!("  Persistence           : {:?}", grid.persistence_values);
@@ -1531,36 +1560,68 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
     let backend = crate::experiments::real_backend::RealBackend::new(&cache);
     let runner = crate::experiments::runner::ExperimentRunner::new(backend);
 
-    let opt = optimize(&runner, &base_cfg, &grid, |idx, total| {
-        if idx % 4 == 0 || idx == total - 1 {
-            print!("\r  [{:>3}/{total}] searching...", idx + 1);
-            let _ = std::io::stdout().flush();
-        }
-    });
+    let opt = if let Some(mg) = &model_grid {
+        optimize_full(&runner, &base_cfg, mg, &grid, |idx, total| {
+            if idx % 4 == 0 || idx == total - 1 {
+                print!("\r  [{:>4}/{total}] searching...", idx + 1);
+                let _ = std::io::stdout().flush();
+            }
+        })
+    } else {
+        optimize(&runner, &base_cfg, &grid, |idx, total| {
+            if idx % 4 == 0 || idx == total - 1 {
+                print!("\r  [{:>3}/{total}] searching...", idx + 1);
+                let _ = std::io::stdout().flush();
+            }
+        })
+    };
 
     println!("\r  [{n}/{n}] done.         ", n = opt.n_evaluated);
     println!();
 
     // Print top-N results.
-    println!("  Top-{top_n} results (sorted by score desc):");
-    println!("  {:>6}  {:>11}  {:>11}  {:>8}  {:>9}  {:>9}  {:>8}",
-        "rank", "threshold", "persistence", "cooldown", "coverage", "precision", "score");
-    println!("  {}", "-".repeat(72));
-    for (rank, pt) in opt.points.iter().take(top_n).enumerate() {
-        println!("  {:>6}  {:>11.4}  {:>11}  {:>8}  {:>9.4}  {:>9.4}  {:>8.4}",
-            rank + 1,
-            pt.threshold,
-            pt.persistence_required,
-            pt.cooldown,
-            pt.coverage,
-            pt.precision_like,
-            pt.score,
-        );
+    if model_opt {
+        println!("  Top-{top_n} results (sorted by score desc):");
+        println!("  {:>5}  {:>8}  {:>13}  {:>10}  {:>8}  {:>9}  {:>9}  {:>8}",
+            "rank", "k_reg", "feature", "threshold", "persist", "coverage", "precision", "score");
+        println!("  {}", "-".repeat(85));
+        for (rank, pt) in opt.points.iter().take(top_n).enumerate() {
+            println!("  {:>5}  {:>8}  {:>13}  {:>10.4}  {:>8}  {:>9.4}  {:>9.4}  {:>8.4}",
+                rank + 1,
+                pt.k_regimes,
+                feature_family_name(&pt.feature_family),
+                pt.threshold,
+                pt.persistence_required,
+                pt.coverage,
+                pt.precision_like,
+                pt.score,
+            );
+        }
+    } else {
+        println!("  Top-{top_n} results (sorted by score desc):");
+        println!("  {:>6}  {:>11}  {:>11}  {:>8}  {:>9}  {:>9}  {:>8}",
+            "rank", "threshold", "persistence", "cooldown", "coverage", "precision", "score");
+        println!("  {}", "-".repeat(72));
+        for (rank, pt) in opt.points.iter().take(top_n).enumerate() {
+            println!("  {:>6}  {:>11.4}  {:>11}  {:>8}  {:>9.4}  {:>9.4}  {:>8.4}",
+                rank + 1,
+                pt.threshold,
+                pt.persistence_required,
+                pt.cooldown,
+                pt.coverage,
+                pt.precision_like,
+                pt.score,
+            );
+        }
     }
     println!();
 
     let best = opt.points.first().expect("grid must have at least one point");
     println!("  Best params:");
+    if model_opt {
+        println!("    k_regimes           = {}", best.k_regimes);
+        println!("    feature_family      = {}", feature_family_name(&best.feature_family));
+    }
     println!("    threshold           = {}", best.threshold);
     println!("    persistence_required= {}", best.persistence_required);
     println!("    cooldown            = {}", best.cooldown);
@@ -1606,6 +1667,8 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
     let report_points: Vec<_> = opt.points.iter().enumerate().map(|(i, p)| {
         serde_json::json!({
             "rank": i + 1,
+            "k_regimes": p.k_regimes,
+            "feature_family": feature_family_name(&p.feature_family),
             "threshold": p.threshold,
             "persistence_required": p.persistence_required,
             "cooldown": p.cooldown,
@@ -1617,10 +1680,22 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
         })
     }).collect();
 
+    let model_grid_json = if let Some(mg) = &model_grid {
+        serde_json::json!({
+            "k_regimes_values": mg.k_regimes_values,
+            "feature_families": mg.feature_families.iter().map(|f| feature_family_name(f)).collect::<Vec<_>>(),
+            "n_points": mg.n_points(),
+        })
+    } else {
+        serde_json::json!(null)
+    };
+
     let search_report = serde_json::json!({
         "experiment_id": id,
         "detector_type": format!("{:?}", base_cfg.detector.detector_type),
-        "grid": {
+        "mode": if model_opt { "joint" } else { "detector_only" },
+        "model_grid": model_grid_json,
+        "detector_grid": {
             "thresholds": grid.thresholds,
             "persistence_values": grid.persistence_values,
             "cooldown_values": grid.cooldown_values,
@@ -1628,6 +1703,8 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
         },
         "n_evaluated": opt.n_evaluated,
         "best": {
+            "k_regimes": best.k_regimes,
+            "feature_family": feature_family_name(&best.feature_family),
             "threshold": best.threshold,
             "persistence_required": best.persistence_required,
             "cooldown": best.cooldown,
@@ -1648,9 +1725,16 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
         format!("Date           : {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")),
         format!("Experiment ID  : {id}"),
         format!("Detector       : {:?}", base_cfg.detector.detector_type),
+        format!("Mode           : {}", if model_opt { "joint model + detector" } else { "detector only" }),
         format!("Grid points    : {}", opt.n_evaluated),
         String::new(),
         format!("Best Params:"),
+    ];
+    if model_opt {
+        summary_lines.push(format!("  k_regimes           = {}", best.k_regimes));
+        summary_lines.push(format!("  feature_family      = {}", feature_family_name(&best.feature_family)));
+    }
+    summary_lines.extend([
         format!("  threshold           = {}", best.threshold),
         format!("  persistence_required= {}", best.persistence_required),
         format!("  cooldown            = {}", best.cooldown),
@@ -1660,16 +1744,29 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
         format!("  n_alarms            = {}", best.n_alarms),
         String::new(),
         format!("Top-{top_n} Grid Results:"),
-        format!("  {:>4}  {:>10}  {:>11}  {:>8}  {:>9}  {:>9}  {:>8}",
-            "rank", "threshold", "persistence", "cooldown", "coverage", "precision", "score"),
-        format!("  {}", "-".repeat(65)),
-    ];
-    for (rank, pt) in opt.points.iter().take(top_n).enumerate() {
-        summary_lines.push(format!(
-            "  {:>4}  {:>10.4}  {:>11}  {:>8}  {:>9.4}  {:>9.4}  {:>8.4}",
-            rank + 1, pt.threshold, pt.persistence_required, pt.cooldown,
-            pt.coverage, pt.precision_like, pt.score,
-        ));
+    ]);
+    if model_opt {
+        summary_lines.push(format!("  {:>4}  {:>6}  {:>13}  {:>10}  {:>7}  {:>9}  {:>9}  {:>8}",
+            "rank", "k_reg", "feature", "threshold", "persist", "coverage", "precision", "score"));
+        summary_lines.push(format!("  {}", "-".repeat(82)));
+        for (rank, pt) in opt.points.iter().take(top_n).enumerate() {
+            summary_lines.push(format!(
+                "  {:>4}  {:>6}  {:>13}  {:>10.4}  {:>7}  {:>9.4}  {:>9.4}  {:>8.4}",
+                rank + 1, pt.k_regimes, feature_family_name(&pt.feature_family),
+                pt.threshold, pt.persistence_required, pt.coverage, pt.precision_like, pt.score,
+            ));
+        }
+    } else {
+        summary_lines.push(format!("  {:>4}  {:>10}  {:>11}  {:>8}  {:>9}  {:>9}  {:>8}",
+            "rank", "threshold", "persistence", "cooldown", "coverage", "precision", "score"));
+        summary_lines.push(format!("  {}", "-".repeat(65)));
+        for (rank, pt) in opt.points.iter().take(top_n).enumerate() {
+            summary_lines.push(format!(
+                "  {:>4}  {:>10.4}  {:>11}  {:>8}  {:>9.4}  {:>9.4}  {:>8.4}",
+                rank + 1, pt.threshold, pt.persistence_required, pt.cooldown,
+                pt.coverage, pt.precision_like, pt.score,
+            ));
+        }
     }
     summary_lines.push(String::new());
     summary_lines.push(format!("Artifacts saved to: {save_dir}"));
@@ -1694,7 +1791,8 @@ fn print_help() {
     println!("  e2e                                          Run all registered synthetic experiments");
     println!("  param-search  [--id <experiment_id>]         Grid search over detector params (DryRun)");
     println!("  optimize      --id <id> [--cache <path>]     Grid search on real data then full E2E");
-    println!("                [--save <dir>] [--top <n>]");
+    println!("                [--save <dir>] [--top <n>]      Add --model to also sweep k_regimes");
+    println!("                [--model]                        and feature families (joint search)");
     println!("  run-experiment  --config <path.json>         Run single experiment (DryRun/Synthetic)");
     println!("  run-batch       --config a.json [...]        Run batch from files");
     println!("  run-real        --id <id> [--cache <path>]   Run a real-data experiment by registry ID");

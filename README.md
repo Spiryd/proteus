@@ -122,21 +122,35 @@ Produces `calibration_summary.json`, `synthetic_vs_empirical_summary.json`, and 
 
 Two-phase parameter search for real-data experiments:
 
-1. **Phase 1 — Grid search** (artifact writes disabled for speed): sweeps a detector-appropriate dense grid over `threshold`, `persistence_required`, and `cooldown` using real data and the full EM pipeline. Ranks all grid points by a combined coverage + precision score.
-2. **Phase 2 — Full E2E run**: re-runs with the best-scoring config with full artifact output (JSON, CSV, plots).
+1. **Phase 1 — Grid search** (artifact writes disabled for speed): sweeps a grid
+   over detector and optionally model parameters using real data and the full EM
+   pipeline. Ranks all grid points by a combined coverage + precision score.
+2. **Phase 2 — Full E2E run**: re-runs with the best-scoring config with full
+   artifact output (JSON, CSV, plots).
+
+Two search modes:
+
+- **Detector-only** (default): sweeps `threshold`, `persistence_required`, `cooldown`.
+- **Joint model + detector** (`--model`): additionally sweeps `k_regimes` ∈ {2, 3}
+  and five feature families.
 
 ```
+# Detector-only
 cargo run -- optimize --id real_spy_daily_hard_switch
 cargo run -- optimize --id real_wti_daily_surprise --save ./runs/optimize/wti --top 15
+
+# Joint model + detector
+cargo run -- optimize --id real_spy_daily_hard_switch --model
+cargo run -- optimize --id real_spy_intraday_hard_switch --model --top 20
 ```
 
 Default grids by detector type:
 
-| Detector | Threshold range | Persistence | Cooldown | Grid points |
-|----------|----------------|-------------|----------|-------------|
-| `HardSwitch` | 0.30 – 0.80 | 1, 2, 3, 5 | 0, 3, 5, 10 | 128 |
-| `Surprise` | 1.0 – 6.0 | 1, 2, 3, 5 | 0, 5, 10, 20 | 128 |
-| `PosteriorTransition` | 0.10 – 0.50 | 1, 2, 3 | 0, 3, 5, 10 | 84 |
+| Detector | Threshold range | Persistence | Cooldown | Detector pts | Joint pts (×10) |
+|----------|----------------|-------------|----------|--------------|------------------|
+| `HardSwitch` | 0.30 – 0.80 | 1, 2, 3, 5 | 0, 3, 5, 10 | 128 | 1 280 |
+| `Surprise` | 1.0 – 6.0 | 1, 2, 3, 5 | 0, 5, 10, 20 | 128 | 1 280 |
+| `PosteriorTransition` | 0.10 – 0.50 | 1, 2, 3 | 0, 3, 5, 10 | 84 | 840 |
 
 Artifacts written to `--save` (default `./runs/optimize/<id>/`):
 

@@ -10,7 +10,7 @@ Proteus supports two modes:
 cargo run              # interactive menu
 cargo run -- e2e       # run all registered experiments end-to-end
 cargo run -- param-search --id <experiment_id>
-cargo run -- optimize  --id <experiment_id> [--cache <path>] [--save <dir>] [--top <n>]
+cargo run -- optimize  --id <experiment_id> [--cache <path>] [--save <dir>] [--top <n>] [--model]
 cargo run -- run-experiment --config experiment_config.json
 cargo run -- run-batch --config a.json --config b.json [--save <dir>]
 cargo run -- run-real  --id <experiment_id> [--cache <path.duckdb>] [--save <dir>]
@@ -161,11 +161,28 @@ Output files:
 
 ### `optimize`
 
-Two-phase parameter search for real-data experiments. Phase 1 runs a dense detector grid on real data (artifact writes disabled for speed) and ranks every grid point by a combined coverage + precision score. Phase 2 re-runs the best configuration with full artifact output.
+Two-phase parameter search for real-data experiments. Phase 1 runs a grid on real
+data (artifact writes disabled for speed) and ranks every point by a combined
+coverage + precision score. Phase 2 re-runs the best configuration with full
+artifact output.
+
+Two search modes are available:
+
+- **Detector-only** (default): sweeps `threshold`, `persistence_required`, and
+  `cooldown`. Feature family and `k_regimes` are fixed at base-config values.
+- **Joint model + detector** (`--model`): additionally sweeps `k_regimes` ∈ {2, 3}
+  and five feature families (LogReturn, AbsReturn, SquaredReturn, RollingVol{5},
+  RollingVol{20}). Intraday experiments use `session_reset: true` rolling-vol
+  variants automatically.
 
 ```
+# Detector-only
 cargo run -- optimize --id real_spy_daily_hard_switch
 cargo run -- optimize --id real_wti_daily_surprise --save ./runs/optimize/wti --top 15
+
+# Joint model + detector
+cargo run -- optimize --id real_spy_daily_hard_switch --model
+cargo run -- optimize --id real_spy_intraday_hard_switch --model --top 20
 ```
 
 Flags:
@@ -176,14 +193,15 @@ Flags:
 | `--cache` | `data/commodities.duckdb` | DuckDB price cache path |
 | `--save` | `./runs/optimize/<id>/` | Output directory |
 | `--top` | `10` | Rows shown in the printed ranking table |
+| `--model` | off | Enable joint model + detector search |
 
 Default grids by detector type:
 
-| Detector | Threshold range | Grid points |
-|----------|----------------|-------------|
-| `HardSwitch` | 0.30 – 0.80 | 128 |
-| `Surprise` | 1.0 – 6.0 | 128 |
-| `PosteriorTransition` | 0.10 – 0.50 | 84 |
+| Detector | Threshold range | Grid points (detector) | Joint grid points (×10 model combos) |
+|----------|----------------|----------------------|--------------------------------------|
+| `HardSwitch` | 0.30 – 0.80 | 128 | 1 280 |
+| `Surprise` | 1.0 – 6.0 | 128 | 1 280 |
+| `PosteriorTransition` | 0.10 – 0.50 | 84 | 840 |
 
 Artifacts written to `--save`:
 

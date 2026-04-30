@@ -280,8 +280,31 @@ Markov-switching detector experiments.
 
 ## 12. Parameter Optimization (`optimize`)
 
-The `optimize` subcommand provides automated detector parameter search for
-real-data experiments. It runs a two-phase workflow:
+The `optimize` subcommand provides automated parameter search for real-data
+experiments. It supports two modes controlled by the `--model` flag.
+
+### Mode A — Detector-only (default)
+
+Sweeps the detector grid only (`threshold`, `persistence_required`, `cooldown`).
+Model architecture and feature family are fixed at the base-config values.
+
+### Mode B — Joint model + detector (`--model`)
+
+Sweeps the full Cartesian product of a `ModelGrid` and the detector `ParamGrid`:
+
+$$
+\text{ModelGrid} \times \text{ParamGrid} = k_{\text{regimes}} \times \text{feature\_family} \times \text{threshold} \times \text{persistence} \times \text{cooldown}
+$$
+
+Default `ModelGrid`:
+
+| Axis | Values |
+|------|--------|
+| `k_regimes` | 2, 3 |
+| feature family | LogReturn, AbsReturn, SquaredReturn, RollingVol{5}, RollingVol{20} |
+
+For session-aware experiments (intraday), rolling-vol families are automatically
+set with `session_reset: true`.
 
 ### Phase 1 — Grid Search
 
@@ -293,10 +316,15 @@ A `ParamGrid` is selected automatically based on the detector type:
 | `Surprise` | 1.0 – 6.0 | 1, 2, 3, 5 | 0, 5, 10, 20 | 128 |
 | `PosteriorTransition` | 0.10 – 0.50 | 1, 2, 3 | 0, 3, 5, 10 | 84 |
 
+In joint mode the total grid size is `ModelGrid.n_points() × ParamGrid.n_points()`
+(e.g. 10 model combos × 128 detector points = 1 280 points for HardSwitch).
+
 For each grid point the runner:
 
-1. Patches `threshold`, `persistence_required`, `cooldown` onto the base config.
-2. Disables artifact writes (`write_json = false`, `write_csv = false`, `save_traces = false`) for speed.
+1. Patches `k_regimes`, `features.family` (joint mode) and `threshold`,
+   `persistence_required`, `cooldown` onto the base config.
+2. Disables artifact writes (`write_json = false`, `write_csv = false`,
+   `save_traces = false`) for speed.
 3. Calls `ExperimentRunner::run` on `RealBackend`.
 4. Extracts evaluation metrics and computes a combined score:
 
@@ -326,16 +354,21 @@ In addition to the standard run artifact set, `optimize` writes:
 
 | File | Contents |
 |------|----------|
-| `search_report.json` | Full ranked grid — all N scored points |
+| `search_report.json` | Full ranked grid — all N scored points with `k_regimes`, `feature_family`, detector params, and score |
 | `search_summary.txt` | Human-readable top-N table + best params |
 
 ### CLI Usage
 
 ```
+# Detector-only (default)
 cargo run -- optimize --id real_spy_daily_hard_switch
 cargo run -- optimize --id real_wti_daily_surprise --cache data/commodities.duckdb --save ./runs/optimize/wti --top 15
+
+# Joint model + detector
+cargo run -- optimize --id real_spy_daily_hard_switch --model
+cargo run -- optimize --id real_spy_intraday_hard_switch --model --top 20
 ```
 
-The `optimize` function is exported from `experiments::search` and accepts any
-`ExperimentBackend`, making it testable with `DryRunBackend` and reusable in
-batch workflows.
+The `optimize` and `optimize_full` functions are exported from `experiments::search`
+and accept any `ExperimentBackend`, making them testable with `DryRunBackend` and
+reusable in batch workflows.

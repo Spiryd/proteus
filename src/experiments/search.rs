@@ -1,10 +1,11 @@
 #![allow(dead_code)]
-/// Grid search over detector parameters.
+/// Grid search over detector and model parameters.
 ///
-/// Sweeps a `ParamGrid` over `threshold`, `persistence_required`, and
-/// `cooldown` while holding everything else fixed in a base
-/// [`ExperimentConfig`]. Results are sorted by score descending (best first).
-use super::config::ExperimentConfig;
+/// [`ParamGrid`] sweeps `threshold`, `persistence_required`, and `cooldown`.
+/// [`ModelGrid`] sweeps `k_regimes` and `features.family`.
+/// [`optimize_full`] searches the joint (model × detector) grid.
+/// Results are sorted by score descending (best first).
+use super::config::{ExperimentConfig, FeatureFamilyConfig};
 use super::result::{EvaluationSummary, ExperimentResult, RunStatus};
 use super::runner::{ExperimentBackend, ExperimentRunner};
 
@@ -79,12 +80,75 @@ impl ParamGrid {
 }
 
 // ---------------------------------------------------------------------------
+// Model grid
+// ---------------------------------------------------------------------------
+
+/// The set of model-level values to sweep (k_regimes and feature family).
+#[derive(Debug, Clone)]
+pub struct ModelGrid {
+    pub k_regimes_values: Vec<usize>,
+    pub feature_families: Vec<FeatureFamilyConfig>,
+}
+
+impl Default for ModelGrid {
+    /// Default grid: k_regimes ∈ {2, 3}, five feature families (daily-safe).
+    fn default() -> Self {
+        Self {
+            k_regimes_values: vec![2, 3],
+            feature_families: vec![
+                FeatureFamilyConfig::LogReturn,
+                FeatureFamilyConfig::AbsReturn,
+                FeatureFamilyConfig::SquaredReturn,
+                FeatureFamilyConfig::RollingVol { window: 5, session_reset: false },
+                FeatureFamilyConfig::RollingVol { window: 20, session_reset: false },
+            ],
+        }
+    }
+}
+
+impl ModelGrid {
+    /// Variant with `session_reset: true` rolling-vol families — suitable for
+    /// intraday data where rolling windows should reset at session boundaries.
+    pub fn for_intraday() -> Self {
+        Self {
+            k_regimes_values: vec![2, 3],
+            feature_families: vec![
+                FeatureFamilyConfig::LogReturn,
+                FeatureFamilyConfig::AbsReturn,
+                FeatureFamilyConfig::SquaredReturn,
+                FeatureFamilyConfig::RollingVol { window: 5, session_reset: true },
+                FeatureFamilyConfig::RollingVol { window: 20, session_reset: true },
+            ],
+        }
+    }
+
+    pub fn n_points(&self) -> usize {
+        self.k_regimes_values.len() * self.feature_families.len()
+    }
+}
+
+/// Return a short display name for a [`FeatureFamilyConfig`] variant.
+pub fn feature_family_name(f: &FeatureFamilyConfig) -> String {
+    match f {
+        FeatureFamilyConfig::LogReturn => "log_return".to_string(),
+        FeatureFamilyConfig::AbsReturn => "abs_return".to_string(),
+        FeatureFamilyConfig::SquaredReturn => "sq_return".to_string(),
+        FeatureFamilyConfig::RollingVol { window, .. } => format!("roll_vol_{window}"),
+        FeatureFamilyConfig::StandardizedReturn { window, .. } => format!("std_ret_{window}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Result types
 // ---------------------------------------------------------------------------
 
 /// Outcome for a single grid point.
 #[derive(Debug, Clone)]
 pub struct SearchPoint {
+    // --- model params ---
+    pub k_regimes: usize,
+    pub feature_family: FeatureFamilyConfig,
+    // --- detector params ---
     pub threshold: f64,
     pub persistence_required: usize,
     pub cooldown: usize,
@@ -108,8 +172,12 @@ pub struct OptimizeResult {
 }
 
 /// Apply the best `SearchPoint`'s params onto `base` and return the patched config.
+/// Patches both model fields (`k_regimes`, `features.family`) and detector
+/// fields (`threshold`, `persistence_required`, `cooldown`).
 pub fn apply_best(base: &ExperimentConfig, best: &SearchPoint) -> ExperimentConfig {
     let mut cfg = base.clone();
+    cfg.model.k_regimes = best.k_regimes;
+    cfg.features.family = best.feature_family.clone();
     cfg.detector.threshold = best.threshold;
     cfg.detector.persistence_required = best.persistence_required;
     cfg.detector.cooldown = best.cooldown;
@@ -146,6 +214,8 @@ pub fn grid_search<B: ExperimentBackend>(
                 let score = combined_score(coverage, precision_like);
 
                 points.push(SearchPoint {
+                    k_regimes: base.model.k_regimes,
+                    feature_family: base.features.family.clone(),
                     threshold,
                     persistence_required,
                     cooldown,
@@ -204,6 +274,8 @@ where
                 let score = combined_score(coverage, precision_like);
 
                 points.push(SearchPoint {
+                    k_regimes: base.model.k_regimes,
+                    feature_family: base.features.family.clone(),
                     threshold,
                     persistence_required,
                     cooldown,
@@ -213,6 +285,82 @@ where
                     precision_like,
                     status: result.status,
                 });
+            }
+        }
+    }
+
+    points.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+    let best_config = points
+        .first()
+        .map(|p| apply_best(base, p))
+        .unwrap_or_else(|| base.clone());
+
+    OptimizeResult {
+        n_evaluated: points.len(),
+        points,
+        best_config,
+    }
+}
+
+/// High-level joint optimization driver.
+///
+/// Sweeps the Cartesian product of `model_grid` (k_regimes × feature_family)
+/// and `detector_grid` (threshold × persistence × cooldown). Results are
+/// returned sorted by score descending.
+///
+/// `progress_cb` is called before each grid point with `(point_index, total)`.
+pub fn optimize_full<B: ExperimentBackend, F>(
+    runner: &ExperimentRunner<B>,
+    base: &ExperimentConfig,
+    model_grid: &ModelGrid,
+    detector_grid: &ParamGrid,
+    mut progress_cb: F,
+) -> OptimizeResult
+where
+    F: FnMut(usize, usize),
+{
+    let total = model_grid.n_points() * detector_grid.n_points();
+    let mut idx = 0usize;
+    let mut points = Vec::with_capacity(total);
+
+    for &k_regimes in &model_grid.k_regimes_values {
+        for family in &model_grid.feature_families {
+            for &threshold in &detector_grid.thresholds {
+                for &persistence_required in &detector_grid.persistence_values {
+                    for &cooldown in &detector_grid.cooldown_values {
+                        progress_cb(idx, total);
+                        idx += 1;
+
+                        let mut cfg = base.clone();
+                        cfg.model.k_regimes = k_regimes;
+                        cfg.features.family = family.clone();
+                        cfg.detector.threshold = threshold;
+                        cfg.detector.persistence_required = persistence_required;
+                        cfg.detector.cooldown = cooldown;
+                        cfg.reproducibility.deterministic_run_id = false;
+                        cfg.output.write_json = false;
+                        cfg.output.write_csv = false;
+                        cfg.output.save_traces = false;
+
+                        let result = runner.run(cfg);
+                        let (coverage, precision_like, n_alarms) = extract_metrics(&result);
+                        let score = combined_score(coverage, precision_like);
+
+                        points.push(SearchPoint {
+                            k_regimes,
+                            feature_family: family.clone(),
+                            threshold,
+                            persistence_required,
+                            cooldown,
+                            score,
+                            n_alarms,
+                            coverage,
+                            precision_like,
+                            status: result.status,
+                        });
+                    }
+                }
             }
         }
     }
