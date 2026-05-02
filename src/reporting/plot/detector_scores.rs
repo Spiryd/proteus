@@ -12,6 +12,7 @@ pub struct DetectorScoresPlotInput {
     pub title: String,
 }
 
+#[cfg(not(test))]
 pub fn render_detector_scores(
     input: &DetectorScoresPlotInput,
     output_path: &Path,
@@ -25,11 +26,11 @@ pub fn render_detector_scores(
 
     let min_ts = input.timestamps[0].timestamp();
     let max_ts = input.timestamps.last().unwrap().timestamp();
-    let min_score = input.scores.iter().cloned().fold(f64::INFINITY, f64::min);
+    let min_score = input.scores.iter().copied().fold(f64::INFINITY, f64::min);
     let max_score = input
         .scores
         .iter()
-        .cloned()
+        .copied()
         .fold(f64::NEG_INFINITY, f64::max)
         .max(input.threshold * 1.2);
 

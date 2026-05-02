@@ -37,7 +37,6 @@ This verifies that the project is not relying on stale binaries or local hacks.
 * Run:
 
   ```bash
-  cargo clean
   cargo build
   ```
 * Then run:
@@ -676,26 +675,7 @@ This is critical for thesis readiness.
 
 ---
 
-## 18. Final human sign-off checklist
-
-You can call the system practically complete when all of the following are true:
-
-* [ ] I can train the model from the CLI
-* [ ] I can inspect fitted parameters after training
-* [ ] I can run detection from the CLI
-* [ ] I can inspect alarms, scores, and regime probabilities
-* [ ] I can evaluate synthetic runs end to end
-* [ ] I can evaluate real runs end to end
-* [ ] I can generate plots and tables automatically
-* [ ] I can inspect previous runs and artifacts later
-* [ ] I can run a small batch experiment
-* [ ] I can reproduce a run from saved config/artifacts
-* [ ] I can run a joint model + detector optimization sweep
-* [ ] I have enough saved outputs to start writing the thesis without rerunning everything
-
----
-
-## 19. Verify model + detector joint optimization (`--model`)
+## 18. Verify model + detector joint optimization (`--model`)
 
 This checks the extended `optimize` subcommand that sweeps both model architecture
 and detector parameters in a single joint grid search.
@@ -751,6 +731,73 @@ and detector parameters in a single joint grid search.
 
 ---
 
+## 19. Verify newly wired features (post-baseline)
+
+This section covers the features added after the `verify_2026_05_02` baseline:
+`diagnose()` and `compare_runs()` wired into the production EM training path,
+multi-start EM via `em_n_starts`, two new JSON artifacts (`diagnostics.json`,
+`multi_start_summary.json`), `PosteriorTransitionTV` detector type, and `ema_alpha`
+EMA smoother field.
+
+**Do**
+
+* Commit or stash the changes, rebuild, and re-run one full real-data E2E run
+  using a config with `em_n_starts: 3` to exercise multi-start.
+* Inspect the run directory for `diagnostics.json` and `multi_start_summary.json`.
+* Run one experiment using `detector_type: PosteriorTransitionTV` and confirm it
+  produces alarms and a `detector_config.json` that shows `TotalVariation` score kind.
+* Run one experiment using `detector_type: Surprise` with `ema_alpha: 0.1` and
+  confirm the config snapshot records the field.
+
+**Expected result**
+
+* `diagnostics.json` present in every run with `is_trustworthy`, `warnings`,
+  `param_validity`, `posterior_validity`, `convergence`, and `regimes` sections.
+* `multi_start_summary.json` present when `em_n_starts > 1`, with `runs`,
+  `best_ll`, `ll_spread`, `n_converged`, and `warnings`.
+* `diagnostics_ok` field in `result.json` reflects `is_trustworthy` from diagnostics.
+* `PosteriorTransitionTV` runs successfully and `score_trace.csv` shows values
+  in `[0, 1]`.
+* `ema_alpha` stored in `config.snapshot.json` under `detector.ema_alpha`.
+
+**Tangible artifacts**
+
+* `diagnostics.json` from any run
+* `multi_start_summary.json` from a multi-start run
+* `detector_config.json` from a `PosteriorTransitionTV` run
+* `config.snapshot.json` from a Surprise run with `ema_alpha` set
+
+**Checklist**
+
+* [ ] `diagnostics.json` present and structurally valid
+* [ ] `is_trustworthy` and `warnings` fields readable
+* [ ] `multi_start_summary.json` present when `em_n_starts > 1`
+* [ ] `ll_spread` and `n_converged` plausible
+* [ ] `diagnostics_ok` in `result.json` reflects `is_trustworthy`
+* [ ] `PosteriorTransitionTV` run succeeds with score_trace values in `[0, 1]`
+* [ ] `ema_alpha` round-trips through config snapshot
+
+---
+
+## 20. Final human sign-off checklist
+
+You can call the system practically complete when all of the following are true:
+
+* [ ] I can train the model from the CLI
+* [ ] I can inspect fitted parameters after training
+* [ ] I can run detection from the CLI
+* [ ] I can inspect alarms, scores, and regime probabilities
+* [ ] I can evaluate synthetic runs end to end
+* [ ] I can evaluate real runs end to end
+* [ ] I can generate plots and tables automatically
+* [ ] I can inspect previous runs and artifacts later
+* [ ] I can run a small batch experiment
+* [ ] I can reproduce a run from saved config/artifacts
+* [ ] I can run a joint model + detector optimization sweep
+* [ ] I have enough saved outputs to start writing the thesis without rerunning everything
+
+---
+
 # Suggested execution order
 
 Run the verification in this order:
@@ -772,5 +819,6 @@ Run the verification in this order:
 15. batch run
 16. reproducibility check
 17. docs audit
-18. final sign-off
-19. model + detector joint optimization
+18. model + detector joint optimization
+19. newly wired features (post-baseline)
+20. final sign-off

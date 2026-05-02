@@ -68,10 +68,10 @@ pub fn verify_calibration(
         && diff.sign_change_abs_err <= tol.sign_change_abs_max;
 
     let mut notes = Vec::new();
-    if !within {
-        notes.push("synthetic summaries exceed at least one tolerance bound".to_string());
-    } else {
-        notes.push("synthetic summaries are within configured tolerance".to_string());
+if within {
+            notes.push("synthetic summaries are within configured tolerance".to_string());
+        } else {
+            notes.push("synthetic summaries exceed at least one tolerance bound".to_string());
     }
 
     CalibrationVerification {

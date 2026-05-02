@@ -92,12 +92,14 @@ mod tests {
                 training: TrainingMode::FitOffline,
                 em_max_iter: 10,
                 em_tol: 1e-5,
+                em_n_starts: 1,
             },
             detector: DetectorConfig {
                 detector_type: DetectorType::Surprise,
                 threshold: 2.0,
                 persistence_required: 1,
                 cooldown: 0,
+                ema_alpha: None,
             },
             evaluation: EvaluationConfig::Synthetic { matching_window: 5 },
             output: OutputConfig {

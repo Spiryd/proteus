@@ -5,6 +5,7 @@ use rand::rngs::SmallRng;
 use serde::{Deserialize, Serialize};
 
 use crate::model::simulate;
+use crate::model::simulate::JumpParams;
 
 use super::mapping::{CalibratedSyntheticParams, CalibrationMappingConfig, calibrate_to_synthetic};
 use super::summary::{EmpiricalCalibrationProfile, EmpiricalSummary, summarize_observation_values};
@@ -64,10 +65,18 @@ pub fn run_calibration_workflow(
     let calibrated = calibrate_to_synthetic(&empirical_profile, &mapping_config)?;
 
     let mut rng = SmallRng::seed_from_u64(rng_seed);
-    let sim = simulate(
+
+    // Convert CalibrationMappingConfig.jump → JumpParams so the simulation
+    // layer (model::simulate) remains independent of the calibration module.
+    let jump_params: Option<JumpParams> = calibrated.jump.as_ref().map(|j| JumpParams {
+        prob: j.jump_prob,
+        scale_mult: j.jump_scale_mult,
+    });
+    let sim = simulate::simulate_with_jump(
         calibrated.model_params.clone(),
         calibrated.horizon,
         &mut rng,
+        jump_params.as_ref(),
     )?;
 
     let synthetic_summary = summarize_observation_values(&sim.observations);

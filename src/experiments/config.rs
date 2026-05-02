@@ -148,6 +148,15 @@ pub struct ModelConfig {
     pub training: TrainingMode,
     pub em_max_iter: usize,
     pub em_tol: f64,
+    /// Number of independent EM restarts from different random initialisations.
+    /// The run with the highest final log-likelihood is kept.  `1` (default)
+    /// means single-start.
+    #[serde(default = "default_em_n_starts")]
+    pub em_n_starts: usize,
+}
+
+fn default_em_n_starts() -> usize {
+    1
 }
 
 impl ModelConfig {
@@ -160,6 +169,9 @@ impl ModelConfig {
         }
         if !(self.em_tol.is_finite() && self.em_tol > 0.0) {
             anyhow::bail!("em_tol must be finite and > 0");
+        }
+        if self.em_n_starts == 0 {
+            anyhow::bail!("em_n_starts must be >= 1");
         }
         match &self.training {
             TrainingMode::LoadFrozen { artifact_id } => {
@@ -185,6 +197,11 @@ pub struct DetectorConfig {
     pub threshold: f64,
     pub persistence_required: usize,
     pub cooldown: usize,
+    /// EMA smoothing coefficient for the Surprise detector baseline.
+    /// `None` uses a fixed zero-baseline (raw log-likelihood score).
+    /// Only relevant when `detector_type = Surprise`.
+    #[serde(default)]
+    pub ema_alpha: Option<f64>,
 }
 
 impl DetectorConfig {
@@ -195,6 +212,11 @@ impl DetectorConfig {
         if self.persistence_required == 0 {
             anyhow::bail!("persistence_required must be >= 1");
         }
+        if let Some(alpha) = self.ema_alpha
+            && !(alpha > 0.0 && alpha < 1.0)
+        {
+            anyhow::bail!("ema_alpha must be in (0, 1) when set");
+        }
         Ok(())
     }
 }
@@ -202,7 +224,10 @@ impl DetectorConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DetectorType {
     HardSwitch,
+    /// Uses the LeavePrevious score: probability mass leaving the current regime.
     PosteriorTransition,
+    /// Uses the Total-Variation distance between consecutive posteriors.
+    PosteriorTransitionTV,
     Surprise,
 }
 
@@ -226,8 +251,8 @@ pub enum EvaluationConfig {
 impl EvaluationConfig {
     pub fn validate_for_mode(&self, mode: &ExperimentMode) -> anyhow::Result<()> {
         match (mode, self) {
-            (ExperimentMode::Synthetic, EvaluationConfig::Synthetic { .. }) => Ok(()),
-            (ExperimentMode::Real, EvaluationConfig::Real { .. }) => Ok(()),
+            (ExperimentMode::Synthetic, EvaluationConfig::Synthetic { .. })
+            | (ExperimentMode::Real, EvaluationConfig::Real { .. }) => Ok(()),
             (ExperimentMode::Synthetic, EvaluationConfig::Real { .. }) => {
                 anyhow::bail!("synthetic mode requires synthetic evaluation config")
             }
@@ -298,12 +323,14 @@ mod tests {
                 training: TrainingMode::FitOffline,
                 em_max_iter: 50,
                 em_tol: 1e-6,
+                em_n_starts: 1,
             },
             detector: DetectorConfig {
                 detector_type: DetectorType::Surprise,
                 threshold: 2.0,
                 persistence_required: 1,
                 cooldown: 0,
+                ema_alpha: None,
             },
             evaluation: EvaluationConfig::Synthetic { matching_window: 5 },
             output: OutputConfig {

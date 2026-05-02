@@ -203,7 +203,7 @@ impl OnlineFilterState {
             })
             .collect();
 
-        let max_log = log_scores.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let max_log = log_scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
 
         if !max_log.is_finite() {
             anyhow::bail!(
@@ -279,7 +279,7 @@ impl OnlineFilterState {
         // Advance state
         // ------------------------------------------------------------------
         let new_t = self.t + 1;
-        self.filtered = new_filtered.clone();
+        self.filtered.clone_from(&new_filtered);
         self.t = new_t;
         self.cumulative_log_score += log_ct;
 

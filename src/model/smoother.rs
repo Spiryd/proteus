@@ -166,7 +166,7 @@ pub fn smooth(params: &ModelParams, filter_result: &FilterResult) -> Result<Smoo
         // renormalization step per time step eliminates cumulative drift.
         let sum: f64 = smoothed[s].iter().sum();
         if sum > 0.0 {
-            for val in smoothed[s].iter_mut() {
+            for val in &mut smoothed[s] {
                 *val /= sum;
             }
         }

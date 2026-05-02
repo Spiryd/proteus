@@ -4,7 +4,6 @@ use std::sync::Mutex;
 
 use crate::alphavantage::commodity::{CommodityDataPoint, CommodityResponse};
 
-#[allow(dead_code)]
 pub struct SeriesStatus {
     pub symbol: String,
     pub interval: String,

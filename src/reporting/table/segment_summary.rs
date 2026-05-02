@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,10 +28,11 @@ impl SegmentSummaryTableBuilder {
         out.push_str("segment_id,duration_steps,is_detected,mean_shift\n");
 
         for row in &self.rows {
-            out.push_str(&format!(
-                "{},{},{},{}\n",
+            let _ = writeln!(
+                out,
+                "{},{},{},{}",
                 row.segment_id, row.duration_steps, row.is_detected, row.mean_shift
-            ));
+            );
         }
 
         out

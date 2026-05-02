@@ -52,6 +52,11 @@ pub struct ModelArtifact {
     pub ll_history: Vec<f64>,
     pub n_iter: usize,
     pub converged: bool,
+    /// Full diagnostics bundle from the post-fit trust layer; None in
+    /// DryRunBackend and LoadFrozen paths.
+    pub diagnostics: Option<crate::model::FittedModelDiagnostics>,
+    /// Cross-run comparison summary; populated only when `em_n_starts > 1`.
+    pub multi_start_summary: Option<crate::model::MultiStartSummary>,
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +188,8 @@ impl ExperimentBackend for DryRunBackend {
             ll_history: vec![],
             n_iter: 0,
             converged: false,
+            diagnostics: None,
+            multi_start_summary: None,
         })
     }
 
@@ -591,21 +598,66 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
                     kind: "json".to_string(),
                 });
             }
+        }
 
-            // Save loglikelihood_history.csv — one row per EM iteration.
-            if cfg.output.write_csv && !fp.ll_history.is_empty() {
-                let ll_path = run_dir.join("loglikelihood_history.csv");
-                let rows: Vec<String> = fp.ll_history.iter().enumerate()
-                    .map(|(i, &ll)| format!("{},{:.8}", i, ll))
-                    .collect();
-                let content = format!("iteration,log_likelihood\n{}", rows.join("\n"));
-                if let Ok(()) = std::fs::write(&ll_path, content) {
-                    result.artifacts.push(ArtifactRef {
-                        name: "loglikelihood_history".to_string(),
-                        path: ll_path.to_string_lossy().to_string(),
-                        kind: "csv".to_string(),
-                    });
-                }
+        // Save diagnostics.json — post-fit trust layer output.
+        if cfg.output.write_json
+            && let Some(diag) = &model.diagnostics
+        {
+            let diag_path = run_dir.join("diagnostics.json");
+            if let Ok(json) = serde_json::to_string_pretty(&diagnostics_to_json(diag))
+                && let Ok(()) = std::fs::write(&diag_path, json)
+            {
+                result.artifacts.push(ArtifactRef {
+                    name: "diagnostics".to_string(),
+                    path: diag_path.to_string_lossy().to_string(),
+                    kind: "json".to_string(),
+                });
+            }
+            // Propagate diagnostic warnings into run warnings.
+            for w in &diag.warnings {
+                warnings.push(format!("diagnostic: {}", w.description()));
+            }
+        }
+
+        // Save multi_start_summary.json — populated when em_n_starts > 1.
+        if cfg.output.write_json
+            && let Some(ms) = &model.multi_start_summary
+        {
+            let mss_path = run_dir.join("multi_start_summary.json");
+            if let Ok(json) = serde_json::to_string_pretty(&multi_start_summary_to_json(ms))
+                && let Ok(()) = std::fs::write(&mss_path, json)
+            {
+                result.artifacts.push(ArtifactRef {
+                    name: "multi_start_summary".to_string(),
+                    path: mss_path.to_string_lossy().to_string(),
+                    kind: "json".to_string(),
+                });
+            }
+            // Propagate instability warning from multi-start comparison.
+            for w in &ms.warnings {
+                warnings.push(format!("multi_start: {}", w.description()));
+            }
+        }
+
+        // Save loglikelihood_history.csv — one row per EM iteration.
+        if cfg.output.write_json
+            && let Some(ms) = &result.model_summary
+            && let Some(fp) = &ms.fitted_params
+            && cfg.output.write_csv
+            && !fp.ll_history.is_empty()
+        {
+            let ll_path = run_dir.join("loglikelihood_history.csv");
+            let rows: Vec<String> = fp.ll_history.iter().enumerate()
+                .map(|(i, &ll)| format!("{i},{ll:.8}"))
+                .collect();
+            let content = format!("iteration,log_likelihood\n{}", rows.join("\n"));
+            if let Ok(()) = std::fs::write(&ll_path, content) {
+                result.artifacts.push(ArtifactRef {
+                    name: "loglikelihood_history".to_string(),
+                    path: ll_path.to_string_lossy().to_string(),
+                    kind: "csv".to_string(),
+                });
             }
         }
 
@@ -620,8 +672,8 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
                     / obs_slice.len() as f64;
                 (m, v)
             };
-            let fmin = obs_slice.iter().cloned().fold(f64::INFINITY, f64::min);
-            let fmax = obs_slice.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let fmin = obs_slice.iter().copied().fold(f64::INFINITY, f64::min);
+            let fmax = obs_slice.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             let warmup_trimmed = data.n_observations.saturating_sub(features.n_observations);
             let feature_summary = serde_json::json!({
                 "feature_label": features.feature_label,
@@ -659,7 +711,7 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
                     .score_trace
                     .iter()
                     .enumerate()
-                    .map(|(i, s)| format!("{},{:.8}", i + 1, s))
+                    .map(|(i, s)| format!("{},{s:.8}", i + 1))
                     .collect();
                 let content = format!("t,score\n{}", rows.join("\n"));
                 if let Ok(()) = std::fs::write(&trace_path, content) {
@@ -701,8 +753,7 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
         {
             let real_eval_path = run_dir.join("real_eval_summary.csv");
             let content = format!(
-                "metric,value\nevent_coverage,{:.6}\nalarm_relevance,{:.6}\nsegmentation_coherence,{:.6}\n",
-                event_coverage, alarm_relevance, segmentation_coherence
+                "metric,value\nevent_coverage,{event_coverage:.6}\nalarm_relevance,{alarm_relevance:.6}\nsegmentation_coherence,{segmentation_coherence:.6}\n"
             );
             if let Ok(()) = std::fs::write(&real_eval_path, content) {
                 result.artifacts.push(ArtifactRef {
@@ -748,7 +799,7 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
                 .enumerate()
                 .map(|(i, post)| {
                     let vals: Vec<String> =
-                        post.iter().map(|v| format!("{:.8}", v)).collect();
+                        post.iter().map(|v| format!("{v:.8}")).collect();
                     format!("{},{}", i + 1, vals.join(","))
                 })
                 .collect();
@@ -983,7 +1034,7 @@ fn hash_config(cfg: &ExperimentConfig) -> u64 {
 fn generate_run_id(cfg: &ExperimentConfig, config_hash: u64) -> String {
     if cfg.reproducibility.deterministic_run_id {
         let seed = cfg.reproducibility.seed.unwrap_or(0);
-        format!("run_{:016x}_{seed}", config_hash)
+        format!("run_{config_hash:016x}_{seed}")
     } else {
         format!("run_{:016x}_{:x}", config_hash, now_epoch_ms())
     }
@@ -1176,6 +1227,101 @@ fn generate_plots(
     }
 }
 
+/// Serialises a [`MultiStartSummary`] to a JSON value for artifact export.
+fn multi_start_summary_to_json(ms: &crate::model::MultiStartSummary) -> serde_json::Value {
+    let runs: Vec<serde_json::Value> = ms
+        .runs
+        .iter()
+        .map(|r| {
+            let exp_durations: Vec<serde_json::Value> = r
+                .expected_durations
+                .iter()
+                .map(|&d| {
+                    if d.is_finite() {
+                        serde_json::json!(d)
+                    } else {
+                        serde_json::Value::Null
+                    }
+                })
+                .collect();
+            serde_json::json!({
+                "log_likelihood": r.log_likelihood,
+                "n_iter": r.n_iter,
+                "converged": r.converged,
+                "ordered_means": r.ordered_means,
+                "ordered_variances": r.ordered_variances,
+                "expected_durations": exp_durations,
+                "occupancy_shares": r.occupancy_shares,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "n_starts": ms.runs.len(),
+        "best_ll": ms.best_ll,
+        "runner_up_ll": ms.runner_up_ll,
+        "ll_spread": ms.ll_spread,
+        "top2_gap": ms.top2_gap,
+        "n_converged": ms.n_converged,
+        "warnings": ms.warnings.iter().map(|w| w.description()).collect::<Vec<_>>(),
+        "runs": runs,
+    })
+}
+
+/// Serialises a [`FittedModelDiagnostics`] to a JSON value for artifact export.
+///
+/// `expected_durations` entries that are `f64::INFINITY` are represented as
+/// `null` so the output is valid JSON.
+fn diagnostics_to_json(diag: &crate::model::FittedModelDiagnostics) -> serde_json::Value {
+    let exp_durations: Vec<serde_json::Value> = diag
+        .regimes
+        .expected_durations
+        .iter()
+        .map(|&d| {
+            if d.is_finite() {
+                serde_json::json!(d)
+            } else {
+                serde_json::Value::Null
+            }
+        })
+        .collect();
+    serde_json::json!({
+        "is_trustworthy": diag.is_trustworthy,
+        "param_validity": {
+            "valid": diag.param_validity.valid,
+            "max_pi_dev": diag.param_validity.max_pi_dev,
+            "max_row_dev": diag.param_validity.max_row_dev,
+            "min_variance": diag.param_validity.min_variance,
+            "all_params_finite": diag.param_validity.all_params_finite,
+        },
+        "posterior_validity": {
+            "max_filtered_dev": diag.posterior_validity.max_filtered_dev,
+            "max_smoothed_dev": diag.posterior_validity.max_smoothed_dev,
+            "max_pairwise_dev": diag.posterior_validity.max_pairwise_dev,
+            "max_marginal_consistency_err": diag.posterior_validity.max_marginal_consistency_err,
+        },
+        "convergence": {
+            "stop_reason": format!("{:?}", diag.convergence.stop_reason),
+            "n_iter": diag.convergence.n_iter,
+            "initial_ll": diag.convergence.initial_ll,
+            "final_ll": diag.convergence.final_ll,
+            "ll_gain": diag.convergence.ll_gain,
+            "min_delta": diag.convergence.min_delta,
+            "is_monotone": diag.convergence.is_monotone,
+            "largest_negative_delta": diag.convergence.largest_negative_delta,
+        },
+        "regimes": {
+            "means": diag.regimes.means,
+            "variances": diag.regimes.variances,
+            "occupancy_weights": diag.regimes.occupancy_weights,
+            "occupancy_shares": diag.regimes.occupancy_shares,
+            "self_transition_probs": diag.regimes.self_transition_probs,
+            "expected_durations": exp_durations,
+            "hard_counts": diag.regimes.hard_counts,
+        },
+        "warnings": diag.warnings.iter().map(|w| w.description()).collect::<Vec<_>>(),
+    })
+}
+
 /// Returns `stored` as UTC if non-empty, otherwise synthesises sequential
 /// day-indexed timestamps from 2000-01-01 (used for synthetic experiments
 /// that have no real timestamps).
@@ -1183,9 +1329,7 @@ fn ensure_plot_timestamps(
     stored: &[chrono::NaiveDateTime],
     n: usize,
 ) -> Vec<chrono::DateTime<chrono::Utc>> {
-    if !stored.is_empty() {
-        stored.iter().map(|t| t.and_utc()).collect()
-    } else {
+    if stored.is_empty() {
         let base = chrono::NaiveDate::from_ymd_opt(2000, 1, 1)
             .unwrap()
             .and_hms_opt(0, 0, 0)
@@ -1194,6 +1338,8 @@ fn ensure_plot_timestamps(
         (0..n)
             .map(|i| base + chrono::Duration::days(i as i64))
             .collect()
+    } else {
+        stored.iter().map(chrono::NaiveDateTime::and_utc).collect()
     }
 }
 
@@ -1293,12 +1439,14 @@ mod tests {
                 training: TrainingMode::FitOffline,
                 em_max_iter: 10,
                 em_tol: 1e-5,
+                em_n_starts: 1,
             },
             detector: DetectorConfig {
                 detector_type: DetectorType::Surprise,
                 threshold: 2.0,
                 persistence_required: 1,
                 cooldown: 0,
+                ema_alpha: None,
             },
             evaluation: match mode {
                 ExperimentMode::Synthetic => EvaluationConfig::Synthetic { matching_window: 5 },

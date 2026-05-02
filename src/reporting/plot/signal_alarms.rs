@@ -13,6 +13,7 @@ pub struct SignalWithAlarmsPlotInput {
     pub y_label: String,
 }
 
+#[cfg(not(test))]
 pub fn render_signal_with_alarms(
     input: &SignalWithAlarmsPlotInput,
     output_path: &Path,
@@ -29,12 +30,12 @@ pub fn render_signal_with_alarms(
     let min_obs = input
         .observations
         .iter()
-        .cloned()
+        .copied()
         .fold(f64::INFINITY, f64::min);
     let max_obs = input
         .observations
         .iter()
-        .cloned()
+        .copied()
         .fold(f64::NEG_INFINITY, f64::max);
 
     let mut chart = ChartBuilder::on(&root)

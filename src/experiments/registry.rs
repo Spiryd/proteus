@@ -57,6 +57,18 @@ pub fn registry() -> Vec<RegisteredExperiment> {
             description: "SPY 15min  — HardSwitch on intraday adj-close log-returns (2022-2025)",
             build: real_spy_intraday_hard_switch,
         },
+        RegisteredExperiment {
+            id: "posterior_transition_tv",
+            description:
+                "PosteriorTransitionTV — 2-regime synthetic, LogReturn/ZScore, TotalVariation score",
+            build: posterior_transition_tv,
+        },
+        RegisteredExperiment {
+            id: "hard_switch_shock",
+            description:
+                "HardSwitch (shock_contaminated) — 2-regime synthetic with jump contamination",
+            build: hard_switch_shock,
+        },
     ]
 }
 
@@ -86,6 +98,7 @@ fn base(run_label: &str, notes: &str) -> ExperimentConfig {
             training: TrainingMode::FitOffline,
             em_max_iter: 200,
             em_tol: 1e-6,
+            em_n_starts: 1,
         },
         // Filled in by each constructor.
         detector: DetectorConfig {
@@ -93,6 +106,7 @@ fn base(run_label: &str, notes: &str) -> ExperimentConfig {
             threshold: 2.5,
             persistence_required: 2,
             cooldown: 5,
+            ema_alpha: None,
         },
         evaluation: EvaluationConfig::Synthetic { matching_window: 20 },
         output: OutputConfig {
@@ -121,6 +135,7 @@ pub fn hard_switch() -> ExperimentConfig {
         threshold: 0.5,
         persistence_required: 2,
         cooldown: 5,
+        ema_alpha: None,
     };
     cfg
 }
@@ -135,6 +150,7 @@ pub fn posterior_transition() -> ExperimentConfig {
         threshold: 0.3,
         persistence_required: 2,
         cooldown: 5,
+        ema_alpha: None,
     };
     cfg
 }
@@ -146,6 +162,42 @@ pub fn surprise() -> ExperimentConfig {
         threshold: 2.5,
         persistence_required: 2,
         cooldown: 5,
+        ema_alpha: None,
+    };
+    cfg
+}
+
+pub fn posterior_transition_tv() -> ExperimentConfig {
+    let mut cfg = base(
+        "posterior_transition_tv",
+        "Posterior Transition TV detector — full synthetic run (TotalVariation score)",
+    );
+    cfg.detector = DetectorConfig {
+        detector_type: DetectorType::PosteriorTransitionTV,
+        threshold: 0.3,
+        persistence_required: 2,
+        cooldown: 5,
+        ema_alpha: None,
+    };
+    cfg
+}
+
+pub fn hard_switch_shock() -> ExperimentConfig {
+    let mut cfg = base(
+        "hard_switch_shock",
+        "HardSwitch detector — shock-contaminated synthetic run (jump contamination path)",
+    );
+    cfg.data = DataConfig::Synthetic {
+        scenario_id: "shock_contaminated".to_string(),
+        horizon: 2000,
+        dataset_id: None,
+    };
+    cfg.detector = DetectorConfig {
+        detector_type: DetectorType::HardSwitch,
+        threshold: 0.5,
+        persistence_required: 2,
+        cooldown: 5,
+        ema_alpha: None,
     };
     cfg
 }
@@ -178,12 +230,14 @@ fn base_real(run_label: &str, notes: &str, asset: &str, frequency: RealFrequency
             training: TrainingMode::FitOffline,
             em_max_iter: 300,
             em_tol: 1e-7,
+            em_n_starts: 1,
         },
         detector: DetectorConfig {
             detector_type: DetectorType::HardSwitch,
             threshold: 0.55,
             persistence_required: 2,
             cooldown: 5,
+            ema_alpha: None,
         },
         evaluation: EvaluationConfig::Real {
             proxy_events_path: format!(
@@ -231,6 +285,7 @@ pub fn real_spy_daily_hard_switch() -> ExperimentConfig {
         threshold: 0.55,
         persistence_required: 2,
         cooldown: 5,
+        ema_alpha: None,
     };
     cfg
 }
@@ -258,6 +313,7 @@ pub fn real_wti_daily_surprise() -> ExperimentConfig {
         threshold: 3.0,
         persistence_required: 2,
         cooldown: 10,
+        ema_alpha: None,
     };
     cfg
 }
@@ -293,12 +349,14 @@ pub fn real_spy_intraday_hard_switch() -> ExperimentConfig {
             training: TrainingMode::FitOffline,
             em_max_iter: 200,
             em_tol: 1e-6,
+            em_n_starts: 1,
         },
         detector: DetectorConfig {
             detector_type: DetectorType::HardSwitch,
             threshold: 0.55,
             persistence_required: 3,
             cooldown: 10,
+            ema_alpha: None,
         },
         evaluation: EvaluationConfig::Real {
             proxy_events_path: "data/proxy_events/spy.json".to_string(),

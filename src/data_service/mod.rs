@@ -20,32 +20,6 @@ impl DataService {
         })
     }
 
-    /// Return data for a series, using the cache when it is fresh.
-    /// Only calls the API when data is missing or stale.
-    #[allow(dead_code)]
-    pub async fn get(
-        &self,
-        endpoint: &CommodityEndpoint,
-        interval: Interval,
-    ) -> anyhow::Result<CommodityResponse> {
-        let symbol = endpoint.cache_key().to_string();
-        let interval_str = interval.as_str().to_string();
-        let cache = Arc::clone(&self.cache);
-
-        let cached =
-            tokio::task::spawn_blocking(move || cache.load(&symbol, &interval_str)).await??;
-
-        if let Some(response) = cached {
-            return Ok(response);
-        }
-
-        // Cache miss or stale — fetch from API.
-        let response = self.client.commodity_history(endpoint, interval).await?;
-        self.write_cache(endpoint, interval, response.clone())
-            .await?;
-        Ok(response)
-    }
-
     /// Force-fetch from the API regardless of cache state.
     pub async fn refresh(
         &self,
@@ -86,12 +60,12 @@ impl DataService {
                     tokio::task::spawn_blocking(move || cache.last_fetched(&sym, &iv)).await??;
 
                 if cached.is_some() {
-                    println!("[skip]  {} ({}) — already cached", symbol, interval_str);
+                    println!("[skip]  {symbol} ({interval_str}) — already cached");
                     continue;
                 }
             }
 
-            println!("[fetch] {} ({}) ...", symbol, interval_str);
+            println!("[fetch] {symbol} ({interval_str}) ...");
             let series_start = std::time::Instant::now();
             match self.client.commodity_history(&endpoint, interval).await {
                 Ok(response) => {
@@ -108,7 +82,7 @@ impl DataService {
                     );
                 }
                 Err(e) => {
-                    eprintln!("[error] {} ({}): {e}", symbol, interval_str);
+                    eprintln!("[error] {symbol} ({interval_str}): {e}");
                 }
             }
         }

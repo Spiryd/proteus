@@ -7,8 +7,14 @@ pub mod table;
 
 pub use artifact::{ArtifactRootConfig, RunArtifactLayout};
 pub use export::schema;
-pub use plot::{DetectorScoresPlotInput, render_detector_scores};
-pub use plot::{RegimePosteriorPlotInput, render_regime_posteriors};
-pub use plot::{SignalWithAlarmsPlotInput, render_signal_with_alarms};
+pub use plot::DetectorScoresPlotInput;
+#[cfg(not(test))]
+pub use plot::render_detector_scores;
+pub use plot::RegimePosteriorPlotInput;
+#[cfg(not(test))]
+pub use plot::render_regime_posteriors;
+pub use plot::SignalWithAlarmsPlotInput;
+#[cfg(not(test))]
+pub use plot::render_signal_with_alarms;
 pub use report::{AggregateReporter, RunReporter};
 pub use table::MetricsTableBuilder;

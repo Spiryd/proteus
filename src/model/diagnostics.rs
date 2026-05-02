@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// Diagnostics and trust-check layer for the Gaussian Markov Switching Model.
 ///
 /// # Purpose
@@ -108,6 +107,41 @@ pub enum DiagnosticWarning {
     /// Multiple EM runs converged to substantially different log-likelihood
     /// values, suggesting the solution is sensitive to initialization.
     UnstableAcrossStarts { ll_spread: f64 },
+}
+
+impl DiagnosticWarning {
+    /// Returns a human-readable description of the warning including all
+    /// payload fields, suitable for embedding in JSON artifacts and reports.
+    pub fn description(&self) -> String {
+        match self {
+            Self::NearZeroVariance { regime, value } => {
+                format!("Regime {regime} has near-zero variance {value:.2e}")
+            }
+            Self::NearlyUnusedRegime {
+                regime,
+                occupancy_share,
+            } => {
+                format!(
+                    "Regime {regime} occupancy share {occupancy_share:.4} is nearly zero"
+                )
+            }
+            Self::EmNonMonotonicity { iteration, drop } => {
+                format!("EM non-monotonicity at iteration {iteration}: drop = {drop:.2e}")
+            }
+            Self::SuspiciousPersistence {
+                regime,
+                p_self,
+                expected_duration,
+            } => {
+                format!(
+                    "Regime {regime} self-transition p={p_self:.6}, expected duration = {expected_duration:.1}"
+                )
+            }
+            Self::UnstableAcrossStarts { ll_spread } => {
+                format!("Log-likelihood spread across starts = {ll_spread:.4}")
+            }
+        }
+    }
 }
 
 // ===========================================================================
@@ -360,16 +394,13 @@ pub fn compare_runs(results: &[EmResult], obs: &[f64]) -> Result<MultiStartSumma
 
     let best_ll = runs
         .first()
-        .map(|r| r.log_likelihood)
-        .unwrap_or(f64::NEG_INFINITY);
+        .map_or(f64::NEG_INFINITY, |r| r.log_likelihood);
     let runner_up_ll = runs
         .get(1)
-        .map(|r| r.log_likelihood)
-        .unwrap_or(f64::NEG_INFINITY);
+        .map_or(f64::NEG_INFINITY, |r| r.log_likelihood);
     let worst_ll = runs
         .last()
-        .map(|r| r.log_likelihood)
-        .unwrap_or(f64::NEG_INFINITY);
+        .map_or(f64::NEG_INFINITY, |r| r.log_likelihood);
 
     let ll_spread = if runs.len() > 1 {
         best_ll - worst_ll
@@ -420,7 +451,7 @@ fn check_param_validity(params: &ModelParams) -> ParamValidity {
     let min_variance = params
         .variances
         .iter()
-        .cloned()
+        .copied()
         .fold(f64::INFINITY, f64::min);
 
     let all_params_finite = params.means.iter().all(|v| v.is_finite())
@@ -572,8 +603,7 @@ fn summarize_regimes(params: &ModelParams, smoothed: &[Vec<f64>]) -> RegimeSumma
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(idx, _)| idx)
-            .unwrap_or(0);
+            .map_or(0, |(idx, _)| idx);
         hard_counts[best] += 1;
     }
 
@@ -798,7 +828,7 @@ mod tests {
         // params.validate() accepts variances > 0, so structurally valid
         assert!(pv.valid, "expected valid=true for near-zero variance");
         // Build a synthetic EmResult so we can call diagnose.
-        let config = EmConfig {
+        let _config = EmConfig {
             max_iter: 0,
             ..Default::default()
         };
@@ -1073,7 +1103,7 @@ mod tests {
             .iter()
             .map(|&s| {
                 let mut r2 = SmallRng::seed_from_u64(s);
-                let init = simulate(params.clone(), 300, &mut r2).unwrap();
+                let _init = simulate(params.clone(), 300, &mut r2).unwrap();
                 // Use a randomized init_params by perturbing means slightly.
                 let mut p = params.clone();
                 p.means[0] += (s as f64) * 0.1;

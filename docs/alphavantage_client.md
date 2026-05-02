@@ -59,14 +59,8 @@ src/
 pub struct AlphaVantageClient { /* … */ }
 
 impl AlphaVantageClient {
-    // Build from a parsed Config (recommended)
+    // Build from a parsed Config (recommended — reads api_key, base_url, rate_limit_per_minute)
     pub fn from_config(config: &Config) -> Self;
-
-    // Build with an explicit key
-    pub fn new(api_key: impl Into<String>) -> Self;
-
-    // Override base URL (useful for proxies / testing)
-    pub fn with_base_url(self, base_url: impl Into<String>) -> Self;
 
     // Fetch historic prices for a commodity endpoint + interval.
     // For intraday equity (SPY/QQQ + Intraday* intervals) this transparently

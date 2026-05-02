@@ -63,15 +63,19 @@ Defines observed-process construction:
 Defines offline model policy:
 - regime count,
 - fit-vs-load mode,
-- EM settings.
+- EM settings,
+- `em_n_starts` (default `1`) — number of independent EM random restarts;
+  the run with the highest final log-likelihood is kept.
 
 ### 3.4 Detector config
 
 Defines online alarm policy:
-- detector type,
+- detector type (`HardSwitch`, `PosteriorTransition`, `PosteriorTransitionTV`, `Surprise`),
 - threshold,
 - persistence,
-- cooldown.
+- cooldown,
+- `ema_alpha` (optional, `Surprise` only) — exponential moving average smoothing
+  coefficient for the score baseline; `None` disables smoothing.
 
 ### 3.5 Evaluation config
 
@@ -197,7 +201,9 @@ Minimal export set:
 - `model_params.json` — fitted ModelParams (reloadable via `LoadFrozen`),
 - `fit_summary.json` — human-readable EM fit metadata: K, n_iter, converged, log_likelihood_initial/final, convergence_reason,
 - `loglikelihood_history.csv` — log-likelihood at each EM iteration (`iteration,log_likelihood`),
-- `feature_summary.json` — feature pipeline metadata: label, n_obs, train_n, val_n, obs_mean/variance/std/min/max, scaling, session_aware.
+- `feature_summary.json` — feature pipeline metadata: label, n_obs, train_n, val_n, obs_mean/variance/std/min/max, scaling, session_aware,
+- `diagnostics.json` — post-fit trust bundle (`is_trustworthy`, `warnings`, `param_validity`, `posterior_validity`, `convergence`, `regimes`),
+- `multi_start_summary.json` — cross-run stability report (only when `em_n_starts > 1`).
 
 Additional artifacts saved when `save_traces = true`:
 
@@ -315,6 +321,7 @@ A `ParamGrid` is selected automatically based on the detector type:
 | `HardSwitch` | 0.30 – 0.80 | 1, 2, 3, 5 | 0, 3, 5, 10 | 128 |
 | `Surprise` | 1.0 – 6.0 | 1, 2, 3, 5 | 0, 5, 10, 20 | 128 |
 | `PosteriorTransition` | 0.10 – 0.50 | 1, 2, 3 | 0, 3, 5, 10 | 84 |
+| `PosteriorTransitionTV` | 0.10 – 0.50 | 1, 2, 3 | 0, 3, 5, 10 | 84 |
 
 In joint mode the total grid size is `ModelGrid.n_points() × ParamGrid.n_points()`
 (e.g. 10 model combos × 128 detector points = 1 280 points for HardSwitch).

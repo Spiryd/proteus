@@ -27,7 +27,7 @@ fn is_direct_command(s: &str) -> bool {
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    match args.first().map(|s| s.as_str()) {
+    match args.first().map(String::as_str) {
         // Direct subcommand mode
         Some(cmd) if is_direct_command(cmd) => cli::run_direct(args).await,
         // Explicit config file (interactive mode with that config)

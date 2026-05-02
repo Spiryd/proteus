@@ -226,7 +226,7 @@ fn bayes_update(
 /// Computes `log Σᵢ exp(xᵢ)` as `max(x) + log Σᵢ exp(xᵢ − max(x))`
 /// to avoid overflow/underflow.
 fn log_sum_exp(log_vals: &[f64]) -> f64 {
-    let max = log_vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let max = log_vals.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     if max.is_infinite() {
         return f64::NEG_INFINITY;
     }

@@ -43,12 +43,11 @@ impl RunReporter {
         let run_dir = &self.artifact_layout.root;
 
         let mut builder = MetricsTableBuilder::new();
-        let n_alarms = result.detector_summary.as_ref().map(|d| d.n_alarms).unwrap_or(0);
+        let n_alarms = result.detector_summary.as_ref().map_or(0, |d| d.n_alarms);
         let (detector_type, threshold) = result
             .detector_summary
             .as_ref()
-            .map(|d| (d.detector_type.clone(), d.threshold))
-            .unwrap_or_else(|| ("unknown".to_string(), 0.0));
+            .map_or_else(|| ("unknown".to_string(), 0.0), |d| (d.detector_type.clone(), d.threshold));
 
         let (coverage, precision, delay_mean, delay_median) =
             match &result.evaluation_summary {
@@ -96,14 +95,12 @@ impl RunReporter {
 
         Ok(())
     }
-
-    /// Generate all plots for the run (stub — plotters integration pending)
-    pub fn generate_plots(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
 }
 
-/// Aggregates results across multiple runs
+/// Aggregates results across multiple runs.
+///
+/// Loads each run's `evaluation_summary.json` and builds a combined metrics
+/// table.
 pub struct AggregateReporter {
     pub runs: Vec<RunArtifactLayout>,
 }
@@ -113,23 +110,53 @@ impl AggregateReporter {
         Self { runs }
     }
 
-    /// Generate aggregate comparison table
+    /// Build a combined metrics table (Markdown) from all run evaluation
+    /// summaries.  Runs whose summary file cannot be read are silently
+    /// skipped.
     pub fn generate_comparison_table(&self) -> anyhow::Result<String> {
-        let builder = MetricsTableBuilder::new();
+        use crate::experiments::EvaluationSummary;
 
-        for _layout in &self.runs {
-            // Load each run's result and build a row
-            // Add to builder
+        let mut builder = MetricsTableBuilder::new();
+
+        for layout in &self.runs {
+            let summary_path = layout.evaluation_summary_path();
+            let Ok(json) = std::fs::read_to_string(&summary_path) else {
+                continue;
+            };
+            let Ok(eval) = serde_json::from_str::<EvaluationSummary>(&json) else {
+                continue;
+            };
+            let (coverage, precision) = match &eval {
+                EvaluationSummary::Synthetic {
+                    coverage,
+                    precision_like,
+                    precision,
+                    recall,
+                    ..
+                } => (
+                    Some(recall.unwrap_or(*coverage)),
+                    Some(precision.unwrap_or(*precision_like)),
+                ),
+                EvaluationSummary::Real {
+                    event_coverage,
+                    alarm_relevance,
+                    ..
+                } => (Some(*event_coverage), Some(*alarm_relevance)),
+            };
+            builder.add_row(MetricsTableRow {
+                run_id: layout.run_id.clone(),
+                scenario_or_asset: layout.run_id.clone(),
+                detector_type: String::new(),
+                threshold: 0.0,
+                n_alarms: 0,
+                coverage,
+                precision,
+                delay_mean: None,
+                delay_median: None,
+            });
         }
 
-        Ok(builder.to_csv())
-    }
-
-    /// Generate aggregate plots comparing detectors
-    pub fn generate_aggregate_plots(&self) -> anyhow::Result<()> {
-        // Collect metrics from all runs
-        // Generate comparison plots (e.g., boxplot of delays)
-        Ok(())
+        Ok(builder.to_markdown())
     }
 }
 

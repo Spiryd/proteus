@@ -188,12 +188,13 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
 /// Direct CLI dispatch: `cargo run -- <subcommand> [options]`
 pub async fn run_direct(args: Vec<String>) -> anyhow::Result<()> {
-    let cmd = args.first().map(|s| s.as_str()).unwrap_or("help");
+    let cmd = args.first().map_or("help", String::as_str);
     match cmd {
         "run-experiment" => direct_run_experiment(&args),
         "run-batch" => direct_run_batch(&args),
         "run-real" => direct_run_real(&args),
         "calibrate" => direct_calibrate(&args),
+        "compare-runs" => direct_compare_runs(&args),
         "e2e" => cmd_e2e_run(),
         "param-search" => {
             let id = flag_value(&args, "--id").unwrap_or_else(|| "surprise".to_string());
@@ -267,9 +268,7 @@ async fn cmd_show(service: &DataService) -> anyhow::Result<()> {
         .await?
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "No cached data for {} ({}). Run Ingest first.",
-                endpoint,
-                interval
+                "No cached data for {endpoint} ({interval}). Run Ingest first."
             )
         })?;
 
@@ -311,7 +310,7 @@ async fn cmd_refresh(service: &DataService) -> anyhow::Result<()> {
         return Ok(());
     };
 
-    println!("\nRefreshing {} ({}) ...", endpoint, interval);
+    println!("\nRefreshing {endpoint} ({interval}) ...");
     let response = service.refresh(&endpoint, interval).await?;
     println!(
         "Done. {} — {} data points stored.",
@@ -329,16 +328,17 @@ async fn cmd_status(service: &DataService) -> anyhow::Result<()> {
     }
 
     println!(
-        "\n{:<20} {:<10} {:<30} {:<8} {:<12} {:<12} Last Fetched",
-        "Symbol", "Interval", "Name", "Points", "From", "To"
+        "\n{:<20} {:<10} {:<30} {:<8} {:<8} {:<12} {:<12} Last Fetched",
+        "Symbol", "Interval", "Name", "Unit", "Points", "From", "To"
     );
-    println!("{:-<112}", "");
+    println!("{:-<120}", "");
     for s in &statuses {
         println!(
-            "{:<20} {:<10} {:<30} {:<8} {:<12} {:<12} {}",
+            "{:<20} {:<10} {:<30} {:<8} {:<8} {:<12} {:<12} {}",
             s.symbol,
             s.interval,
             s.name,
+            s.unit,
             s.point_count,
             s.from_date.date(),
             s.to_date.date(),
@@ -754,7 +754,7 @@ fn cmd_run_real_experiment() -> anyhow::Result<()> {
     println!();
     print_config_block(&cfg);
     println!();
-    println!("  Cache : {}", cache_path);
+    println!("  Cache : {cache_path}");
     println!();
     println!("  Running '{}'...", cfg.meta.run_label);
     println!("  (This may take several seconds while loading data and running EM.)");
@@ -780,9 +780,9 @@ fn cmd_run_real_experiment() -> anyhow::Result<()> {
     {
         println!("  Real-Eval Metrics:");
         println!("  ------------------");
-        println!("  Route A  event_coverage     = {:.4}", event_coverage);
-        println!("  Route A  alarm_relevance     = {:.4}", alarm_relevance);
-        println!("  Route B  segmentation_coherence = {:.4}", segmentation_coherence);
+        println!("  Route A  event_coverage     = {event_coverage:.4}");
+        println!("  Route A  alarm_relevance     = {alarm_relevance:.4}");
+        println!("  Route B  segmentation_coherence = {segmentation_coherence:.4}");
     }
 
     Ok(())
@@ -805,7 +805,7 @@ fn cmd_e2e_run() -> anyhow::Result<()> {
 
     println!();
     println!("  ==============================================================");
-    println!("  E2E Run — {} synthetic experiments", total);
+    println!("  E2E Run — {total} synthetic experiments");
     println!("  (Real-data experiments skipped — use 'Run Real Experiment')");
     println!("  ==============================================================");
 
@@ -859,7 +859,7 @@ fn cmd_e2e_run() -> anyhow::Result<()> {
                     println!(
                         "  Metrics : prec={:.4}  recall={:.4}  n_events={}  n_alarms={}",
                         prec, rec, n_events,
-                        result.detector_summary.as_ref().map(|d| d.n_alarms).unwrap_or(0)
+                        result.detector_summary.as_ref().map_or(0, |d| d.n_alarms)
                     );
                     if let Some(mr) = miss_rate {
                         println!("  Miss rate: {mr:.4}  FAR: {:.6}", false_alarm_rate.unwrap_or(0.0));
@@ -874,8 +874,7 @@ fn cmd_e2e_run() -> anyhow::Result<()> {
                     segmentation_coherence,
                 } => {
                     println!(
-                        "  Metrics : event_cov={:.4}  relevance={:.4}  coherence={:.4}",
-                        event_coverage, alarm_relevance, segmentation_coherence
+                        "  Metrics : event_cov={event_coverage:.4}  relevance={alarm_relevance:.4}  coherence={segmentation_coherence:.4}"
                     );
                 }
             }
@@ -933,7 +932,7 @@ fn cmd_e2e_run() -> anyhow::Result<()> {
         } else {
             let table_path = PathBuf::from("./runs/metrics_table.md");
             match fs::write(&table_path, &table_md) {
-                Ok(_) => println!("\n  Metrics table written to: {}", table_path.display()),
+                Ok(()) => println!("\n  Metrics table written to: {}", table_path.display()),
                 Err(e) => eprintln!("  [!] Could not write metrics table: {e}"),
             }
         }
@@ -942,7 +941,7 @@ fn cmd_e2e_run() -> anyhow::Result<()> {
     let n_success = all_results.iter().filter(|(_, r)| r.is_success()).count();
     let n_failed = all_results.len() - n_success;
     println!();
-    println!("  Completed: {}  Failed: {}", n_success, n_failed);
+    println!("  Completed: {n_success}  Failed: {n_failed}");
     Ok(())
 }
 
@@ -1146,7 +1145,7 @@ fn direct_run_batch(args: &[String]) -> anyhow::Result<()> {
     }
 
     // Save batch_summary.json if --save is specified or always.
-    let save_dir = flag_value(&args, "--save");
+    let save_dir = flag_value(args, "--save");
     {
         let out_dir = save_dir.as_deref().unwrap_or("./runs");
         let _ = fs::create_dir_all(out_dir);
@@ -1233,9 +1232,9 @@ fn direct_run_real(args: &[String]) -> anyhow::Result<()> {
     {
         println!();
         println!("Real-Eval Metrics:");
-        println!("  Route A  event_coverage          = {:.4}", event_coverage);
-        println!("  Route A  alarm_relevance          = {:.4}", alarm_relevance);
-        println!("  Route B  segmentation_coherence   = {:.4}", segmentation_coherence);
+        println!("  Route A  event_coverage          = {event_coverage:.4}");
+        println!("  Route A  alarm_relevance          = {alarm_relevance:.4}");
+        println!("  Route B  segmentation_coherence   = {segmentation_coherence:.4}");
     }
 
     // Show model parameters.
@@ -1268,8 +1267,8 @@ fn direct_run_real(args: &[String]) -> anyhow::Result<()> {
     }
 
     // Optionally copy artifacts to a save directory.
-    if let Some(ref save_dir) = save_to {
-        if let Some(first_art) = result.artifacts.first() {
+    if let Some(ref save_dir) = save_to
+        && let Some(first_art) = result.artifacts.first() {
             let run_path = PathBuf::from(&first_art.path);
             if let Some(run_dir_path) = run_path.parent() {
                 let dest = PathBuf::from(save_dir);
@@ -1286,7 +1285,6 @@ fn direct_run_real(args: &[String]) -> anyhow::Result<()> {
                 let _ = run_dir_path; // suppress unused warning
             }
         }
-    }
 
     Ok(())
 }
@@ -1363,12 +1361,23 @@ fn direct_calibrate(args: &[String]) -> anyhow::Result<()> {
     };
 
     let seed = cfg.reproducibility.seed.unwrap_or(42);
+    let scenario_id = match &cfg.data {
+        DataConfig::Synthetic { scenario_id, .. } => scenario_id.clone(),
+        DataConfig::Real { .. } => String::new(),
+    };
+    let jump = if scenario_id == "shock_contaminated" {
+        use crate::calibration::mapping::JumpContamination;
+        Some(JumpContamination { jump_prob: 0.05, jump_scale_mult: 3.0 })
+    } else {
+        None
+    };
     let mapping = CalibrationMappingConfig {
         k: cfg.model.k_regimes,
         horizon: match &cfg.data {
             DataConfig::Synthetic { horizon, .. } => *horizon,
             DataConfig::Real { .. } => 2000,
         },
+        jump,
         ..CalibrationMappingConfig::default()
     };
 
@@ -1530,7 +1539,7 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
     if let Some(mg) = &model_grid {
         println!("  k_regimes values      : {:?}", mg.k_regimes_values);
         println!("  Feature families      : {}",
-            mg.feature_families.iter().map(|f| feature_family_name(f)).collect::<Vec<_>>().join(", "));
+            mg.feature_families.iter().map(feature_family_name).collect::<Vec<_>>().join(", "));
     }
     let total_pts = if let Some(mg) = &model_grid {
         mg.n_points() * grid.n_points()
@@ -1638,7 +1647,7 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
     best_cfg.output.write_json = true;
     best_cfg.output.write_csv = true;
     best_cfg.output.save_traces = true;
-    best_cfg.output.root_dir = save_dir.clone();
+    best_cfg.output.root_dir.clone_from(&save_dir);
 
     let backend2 = crate::experiments::real_backend::RealBackend::new(&cache);
     let runner2 = crate::experiments::runner::ExperimentRunner::new(backend2);
@@ -1657,9 +1666,9 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
     {
         println!();
         println!("  Real-Eval Metrics (best config):");
-        println!("    event_coverage        = {:.4}", event_coverage);
-        println!("    alarm_relevance       = {:.4}", alarm_relevance);
-        println!("    segmentation_coherence= {:.4}", segmentation_coherence);
+        println!("    event_coverage        = {event_coverage:.4}");
+        println!("    alarm_relevance       = {alarm_relevance:.4}");
+        println!("    segmentation_coherence= {segmentation_coherence:.4}");
     }
 
     // Write search_report.json
@@ -1683,7 +1692,7 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
     let model_grid_json = if let Some(mg) = &model_grid {
         serde_json::json!({
             "k_regimes_values": mg.k_regimes_values,
-            "feature_families": mg.feature_families.iter().map(|f| feature_family_name(f)).collect::<Vec<_>>(),
+            "feature_families": mg.feature_families.iter().map(feature_family_name).collect::<Vec<_>>(),
             "n_points": mg.n_points(),
         })
     } else {
@@ -1779,8 +1788,53 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Compare multiple run directories by aggregating their evaluation summaries.
+///
+/// Usage: `compare-runs --dir <run-dir> [--dir <run-dir> ...] [--save <path>]`
+///
+/// Each `--dir` argument is the root of a run directory (the folder that
+/// contains `results/evaluation_summary.json`).  The combined Markdown table
+/// is printed to stdout and, if `--save <path>` is given, also written to
+/// that file.
+fn direct_compare_runs(args: &[String]) -> anyhow::Result<()> {
+    use crate::reporting::{AggregateReporter, RunArtifactLayout};
+
+    let dirs = collect_flag_values(args, "--dir");
+    if dirs.is_empty() {
+        anyhow::bail!(
+            "Usage: compare-runs --dir <run-dir> [--dir <run-dir> ...] [--save <path>]"
+        );
+    }
+    let save_to = flag_value(args, "--save");
+
+    let layouts: Vec<RunArtifactLayout> = dirs
+        .iter()
+        .map(|dir| {
+            let root = PathBuf::from(dir);
+            let run_id = root
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| dir.clone());
+            RunArtifactLayout { run_id, root }
+        })
+        .collect();
+
+    let reporter = AggregateReporter::new(layouts);
+    let table = reporter.generate_comparison_table()?;
+
+    println!("\nAggregate Comparison Table");
+    println!("==========================");
+    println!("{table}");
+
+    if let Some(path) = save_to {
+        fs::write(&path, &table)?;
+        println!("Saved comparison table to: {path}");
+    }
+
+    Ok(())
+}
+
 fn print_help() {
-    println!("Proteus — Markov-Switching Changepoint Detection Platform");
     println!();
     println!("USAGE:");
     println!("  cargo run                             # interactive menu");
@@ -1797,6 +1851,8 @@ fn print_help() {
     println!("  run-batch       --config a.json [...]        Run batch from files");
     println!("  run-real        --id <id> [--cache <path>]   Run a real-data experiment by registry ID");
     println!("  calibrate       --id <id> [--out <dir>]      Calibrate a synthetic experiment");
+    println!("  compare-runs    --dir <dir> [--dir <dir> ...]  Aggregate metrics across run dirs");
+    println!("                  [--save <path>]");
     println!("  inspect         --dir <run-directory>        Inspect run artifacts");
     println!("  status          [--config <path.toml>]       Show data cache status");
     println!("  help                                         Show this message");
@@ -1809,7 +1865,7 @@ fn print_help() {
 fn print_config_block(cfg: &ExperimentConfig) {
     let training_str = match &cfg.model.training {
         TrainingMode::FitOffline => "FitOffline".to_string(),
-        TrainingMode::LoadFrozen { artifact_id } => format!("LoadFrozen:{}", artifact_id),
+        TrainingMode::LoadFrozen { artifact_id } => format!("LoadFrozen:{artifact_id}"),
     };
     println!("  Config:");
     println!("    Label      : {}", cfg.meta.run_label);
@@ -1821,8 +1877,7 @@ fn print_config_block(cfg: &ExperimentConfig) {
             ..
         } => {
             println!(
-                "    Data       : Synthetic  scenario={}  horizon={}",
-                scenario_id, horizon
+                "    Data       : Synthetic  scenario={scenario_id}  horizon={horizon}"
             );
         }
         DataConfig::Real {
@@ -1839,10 +1894,9 @@ fn print_config_block(cfg: &ExperimentConfig) {
                 (None, None) => "all available".to_string(),
             };
             println!(
-                "    Data       : Real  asset={}  {:?}  dataset={}",
-                asset, frequency, dataset_id
+                "    Data       : Real  asset={asset}  {frequency:?}  dataset={dataset_id}"
             );
-            println!("    Date range : {}", range);
+            println!("    Date range : {range}");
         }
     }
     println!(
@@ -1863,8 +1917,7 @@ fn print_config_block(cfg: &ExperimentConfig) {
     match &cfg.evaluation {
         EvaluationConfig::Synthetic { matching_window } => {
             println!(
-                "    Evaluation : Synthetic  matching_window={}",
-                matching_window
+                "    Evaluation : Synthetic  matching_window={matching_window}"
             );
         }
         EvaluationConfig::Real {
@@ -1874,8 +1927,7 @@ fn print_config_block(cfg: &ExperimentConfig) {
             ..
         } => {
             println!(
-                "    Evaluation : Real  route_a=[{},{})  route_b_min_seg={}",
-                route_a_point_pre_bars, route_a_point_post_bars, route_b_min_segment_len
+                "    Evaluation : Real  route_a=[{route_a_point_pre_bars},{route_a_point_post_bars})  route_b_min_seg={route_b_min_segment_len}"
             );
         }
     }
@@ -1908,8 +1960,8 @@ fn print_stage_log(cfg: &ExperimentConfig, result: &ExperimentResult) {
                     scenario_id,
                     horizon,
                     ..
-                } => format!("dataset=synthetic:{}  n={}", scenario_id, horizon),
-                DataConfig::Real { dataset_id, .. } => format!("dataset=real:{}", dataset_id),
+                } => format!("dataset=synthetic:{scenario_id}  n={horizon}"),
+                DataConfig::Real { dataset_id, .. } => format!("dataset=real:{dataset_id}"),
             },
             RunStage::BuildFeatures => {
                 let n = match &cfg.data {
@@ -1917,8 +1969,7 @@ fn print_stage_log(cfg: &ExperimentConfig, result: &ExperimentResult) {
                     DataConfig::Real { .. } => result
                         .detector_summary
                         .as_ref()
-                        .map(|ds| ds.n_alarms) // n_steps not stored; use n_steps from online
-                        .unwrap_or(0),
+                        .map_or(0, |ds| ds.n_alarms),
                 };
                 format!(
                     "family={:?}  scaling={:?}  session_aware={}  n_feature_obs={}",
@@ -1955,14 +2006,12 @@ fn print_stage_log(cfg: &ExperimentConfig, result: &ExperimentResult) {
                         .timings
                         .iter()
                         .find(|t| t.stage == RunStage::RunOnline)
-                        .map(|_| {
+                        .map_or(0, |_| {
                             result
                                 .detector_summary
                                 .as_ref()
-                                .map(|ds| ds.alarm_indices.last().copied().unwrap_or(0))
-                                .unwrap_or(0)
-                        })
-                        .unwrap_or(0),
+                                .map_or(0, |ds| ds.alarm_indices.last().copied().unwrap_or(0))
+                        }),
                 };
                 result
                     .detector_summary
@@ -1998,8 +2047,7 @@ fn print_stage_log(cfg: &ExperimentConfig, result: &ExperimentResult) {
                     alarm_relevance,
                     segmentation_coherence,
                 }) => format!(
-                    "event_cov={:.4}  relevance={:.4}  coherence={:.4}",
-                    event_coverage, alarm_relevance, segmentation_coherence
+                    "event_cov={event_coverage:.4}  relevance={alarm_relevance:.4}  coherence={segmentation_coherence:.4}"
                 ),
                 None => String::new(),
             },
@@ -2047,7 +2095,7 @@ fn print_run_result_summary(result: &ExperimentResult) {
                 println!(
                     "  Metrics  : prec={:.4}  recall={:.4}  n_events={}  n_alarms={}",
                     prec, rec, n_events,
-                    result.detector_summary.as_ref().map(|d| d.n_alarms).unwrap_or(0)
+                    result.detector_summary.as_ref().map_or(0, |d| d.n_alarms)
                 );
                 if let Some(mr) = miss_rate {
                     println!("  Miss rate: {mr:.4}  FAR: {:.6}", false_alarm_rate.unwrap_or(0.0));
@@ -2062,8 +2110,7 @@ fn print_run_result_summary(result: &ExperimentResult) {
                 segmentation_coherence,
             } => {
                 println!(
-                    "  Metrics  : event_cov={:.4}  relevance={:.4}  coherence={:.4}",
-                    event_coverage, alarm_relevance, segmentation_coherence
+                    "  Metrics  : event_cov={event_coverage:.4}  relevance={alarm_relevance:.4}  coherence={segmentation_coherence:.4}"
                 );
             }
         }
@@ -2090,7 +2137,7 @@ fn build_metrics_table(results: &[&ExperimentResult]) -> String {
                 Some(precision.unwrap_or(*precision_like)),
                 *delay_mean,
                 *delay_median,
-                result.detector_summary.as_ref().map(|d| d.n_alarms).unwrap_or(0),
+                result.detector_summary.as_ref().map_or(0, |d| d.n_alarms),
             ),
             Some(EvaluationSummary::Real {
                 event_coverage,
@@ -2101,15 +2148,14 @@ fn build_metrics_table(results: &[&ExperimentResult]) -> String {
                 Some(*alarm_relevance),
                 None,
                 None,
-                result.detector_summary.as_ref().map(|d| d.n_alarms).unwrap_or(0),
+                result.detector_summary.as_ref().map_or(0, |d| d.n_alarms),
             ),
             None => (None, None, None, None, 0),
         };
         let (detector_type, threshold) = result
             .detector_summary
             .as_ref()
-            .map(|d| (d.detector_type.clone(), d.threshold))
-            .unwrap_or_else(|| ("unknown".to_string(), 0.0));
+            .map_or_else(|| ("unknown".to_string(), 0.0), |d| (d.detector_type.clone(), d.threshold));
         builder.add_row(MetricsTableRow {
             run_id: result.metadata.run_id.clone(),
             scenario_or_asset: result.metadata.run_label.clone(),
@@ -2164,11 +2210,11 @@ fn print_search_results(results: &[SearchPoint], top_n: usize) {
 
 fn load_experiment_config(path: &str) -> anyhow::Result<ExperimentConfig> {
     let content =
-        fs::read_to_string(path).map_err(|e| anyhow::anyhow!("Cannot read '{}': {}", path, e))?;
-    if path.ends_with(".toml") {
-        toml::from_str(&content).map_err(|e| anyhow::anyhow!("TOML parse error: {}", e))
+        fs::read_to_string(path).map_err(|e| anyhow::anyhow!("Cannot read '{path}': {e}"))?;
+    if std::path::Path::new(path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("toml")) {
+        toml::from_str(&content).map_err(|e| anyhow::anyhow!("TOML parse error: {e}"))
     } else {
-        serde_json::from_str(&content).map_err(|e| anyhow::anyhow!("JSON parse error: {}", e))
+        serde_json::from_str(&content).map_err(|e| anyhow::anyhow!("JSON parse error: {e}"))
     }
 }
 
@@ -2222,7 +2268,7 @@ fn show_artifact_tree(path: &Path, depth: usize) {
         }
         if let Ok(mut entries) = fs::read_dir(path) {
             let mut children: Vec<_> = entries.by_ref().flatten().collect();
-            children.sort_by_key(|e| e.file_name());
+            children.sort_by_key(std::fs::DirEntry::file_name);
             for entry in children {
                 show_artifact_tree(&entry.path(), depth + 1);
             }
@@ -2251,12 +2297,12 @@ fn list_runs_recursive(path: &Path, count: &mut usize) {
                 Some(format!("{label}  [{mode}]  {status}"))
             })
             .unwrap_or_else(|| path.display().to_string());
-        println!("  [{}] {}", count, info);
+        println!("  [{count}] {info}");
         return;
     }
     if let Ok(mut entries) = fs::read_dir(path) {
         let mut children: Vec<_> = entries.by_ref().flatten().collect();
-        children.sort_by_key(|e| e.file_name());
+        children.sort_by_key(std::fs::DirEntry::file_name);
         for entry in children {
             list_runs_recursive(&entry.path(), count);
         }

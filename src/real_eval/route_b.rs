@@ -211,7 +211,7 @@ fn build_adjacent_contrasts(
         let left = &summaries[i];
         let right = &summaries[i + 1];
 
-        let pooled_std = ((left.variance + right.variance) / 2.0).sqrt();
+        let pooled_std = f64::midpoint(left.variance, right.variance).sqrt();
         let effect_size_mean = if pooled_std > 0.0 {
             (right.mean - left.mean) / pooled_std
         } else {

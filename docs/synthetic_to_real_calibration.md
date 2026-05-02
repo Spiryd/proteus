@@ -214,17 +214,20 @@ No test-period information should be used when building calibration targets.
 
 ---
 
-## 10. Scenario Families
+## 10. Scenario Configuration
 
-Recommended calibrated scenario presets:
+Scenario parameters (`k`, `horizon`, mean/variance policy, target durations)
+are supplied directly via `CalibrationMappingConfig` when calling
+`run_calibration_workflow()`. Typical patterns:
 
-1. **Calm vs Turbulent:** two-state variance separation anchored by empirical
-   quantile structure.
-2. **Persistent States:** stronger diagonal persistence from longer target
-   durations.
-3. **Shock Contaminated:** calm/turbulent plus jump contamination.
-4. **Asset Specific:** per-asset/per-frequency calibration (e.g., daily
-   commodity vs intraday ETF).
+- **Two-state calm/turbulent:** `k=2`, short + long target durations,
+  `VariancePolicy::QuantileAnchored`.
+- **Persistent states:** `k=2`, longer target durations,
+  `VariancePolicy::RatioAroundEmpirical`.
+- **Shock contamination:** as calm/turbulent with `JumpContamination` set
+  in the mapping config (note: jump injection in the simulator is a future
+  extension — the parameter is recorded in the calibration artifact).
+- **Asset specific:** `k=3` with per-asset quantile targets.
 
 ---
 

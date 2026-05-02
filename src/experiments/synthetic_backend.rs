@@ -376,7 +376,9 @@ fn map_detector_kind(
     use crate::experiments::config::DetectorType;
     match dt {
         DetectorType::HardSwitch => DetectorKind::HardSwitch,
-        DetectorType::PosteriorTransition => DetectorKind::PosteriorTransition,
+        DetectorType::PosteriorTransition | DetectorType::PosteriorTransitionTV => {
+            DetectorKind::PosteriorTransition
+        }
         DetectorType::Surprise => DetectorKind::Surprise,
     }
 }

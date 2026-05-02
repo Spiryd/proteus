@@ -51,7 +51,7 @@ impl Summary {
         let median = if n % 2 == 1 {
             values[n / 2]
         } else {
-            (values[n / 2 - 1] + values[n / 2]) / 2.0
+            f64::midpoint(values[n / 2 - 1], values[n / 2])
         };
         let min = values[0];
         let max = values[n - 1];

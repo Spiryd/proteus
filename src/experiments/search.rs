@@ -72,7 +72,8 @@ impl ParamGrid {
         match detector_type {
             super::config::DetectorType::HardSwitch => Self::for_real_hard_switch(),
             super::config::DetectorType::Surprise => Self::for_real_surprise(),
-            super::config::DetectorType::PosteriorTransition => {
+            super::config::DetectorType::PosteriorTransition
+            | super::config::DetectorType::PosteriorTransitionTV => {
                 Self::for_real_posterior_transition()
             }
         }
@@ -293,8 +294,7 @@ where
 
     let best_config = points
         .first()
-        .map(|p| apply_best(base, p))
-        .unwrap_or_else(|| base.clone());
+        .map_or_else(|| base.clone(), |p| apply_best(base, p));
 
     OptimizeResult {
         n_evaluated: points.len(),
@@ -369,8 +369,7 @@ where
 
     let best_config = points
         .first()
-        .map(|p| apply_best(base, p))
-        .unwrap_or_else(|| base.clone());
+        .map_or_else(|| base.clone(), |p| apply_best(base, p));
 
     OptimizeResult {
         n_evaluated: points.len(),
@@ -384,8 +383,7 @@ fn extract_metrics(result: &ExperimentResult) -> (f64, f64, usize) {
     let n_alarms = result
         .detector_summary
         .as_ref()
-        .map(|d| d.n_alarms)
-        .unwrap_or(0);
+        .map_or(0, |d| d.n_alarms);
 
     match result.evaluation_summary.as_ref() {
         Some(EvaluationSummary::Synthetic {
@@ -446,12 +444,14 @@ mod tests {
                 training: TrainingMode::FitOffline,
                 em_max_iter: 50,
                 em_tol: 1e-6,
+                em_n_starts: 1,
             },
             detector: DetectorConfig {
                 detector_type: DetectorType::Surprise,
                 threshold: 2.0,
                 persistence_required: 1,
                 cooldown: 0,
+                ema_alpha: None,
             },
             evaluation: EvaluationConfig::Synthetic { matching_window: 10 },
             output: OutputConfig {

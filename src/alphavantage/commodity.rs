@@ -5,7 +5,6 @@ use std::fmt;
 
 /// All supported commodity endpoints from Alpha Vantage.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum CommodityEndpoint {
     Wti,
     Brent,
@@ -271,7 +270,6 @@ pub(crate) struct RawStandardPoint {
 #[derive(Deserialize)]
 pub(crate) struct RawStandardResponse {
     pub name: String,
-    #[allow(dead_code)]
     pub interval: String,
     pub unit: String,
     pub data: Vec<RawStandardPoint>,
@@ -355,7 +353,7 @@ impl RawEquityResponse {
         let time_obj = self
             .series
             .into_values()
-            .find(|v| v.is_object())
+            .find(serde_json::Value::is_object)
             .and_then(|v| match v {
                 serde_json::Value::Object(m) => Some(m),
                 _ => None,
@@ -410,7 +408,6 @@ pub struct CommodityDataPoint {
 #[derive(Debug, Clone)]
 pub struct CommodityResponse {
     pub name: String,
-    #[allow(dead_code)]
     pub interval: String,
     pub unit: String,
     pub data: Vec<CommodityDataPoint>,

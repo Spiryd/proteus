@@ -12,14 +12,6 @@ This opens the cache database and builds the rate-limited HTTP client in one ste
 
 ## Methods
 
-### `get` — cache-first read
-
-```rust
-pub async fn get(endpoint: &CommodityEndpoint, interval: Interval) -> anyhow::Result<CommodityResponse>
-```
-
-Returns cached data when available. Only calls the API when no data exists for that series. Results are written back to the cache automatically.
-
 ### `refresh` — force API fetch
 
 ```rust

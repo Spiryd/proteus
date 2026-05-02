@@ -201,7 +201,7 @@ pub fn evaluate_proxy_events(
         delay_values[delay_values.len() / 2] as f64
     } else {
         let i = delay_values.len() / 2;
-        (delay_values[i - 1] as f64 + delay_values[i] as f64) / 2.0
+        f64::midpoint(delay_values[i - 1] as f64, delay_values[i] as f64)
     };
 
     let in_count = window_mask.iter().filter(|&&x| x).count();

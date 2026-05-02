@@ -35,22 +35,6 @@ impl AlphaVantageClient {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn new(api_key: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            api_key: api_key.into(),
-            base_url: DEFAULT_BASE_URL.to_string(),
-            rate_limiter: RateLimiter::new(DEFAULT_RATE_LIMIT),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.base_url = base_url.into();
-        self
-    }
-
     pub async fn commodity_history(
         &self,
         endpoint: &CommodityEndpoint,
@@ -64,10 +48,7 @@ impl AlphaVantageClient {
                 .collect::<Vec<_>>()
                 .join(", ");
             anyhow::bail!(
-                "Interval '{}' is not supported by {}. Accepted: {}",
-                interval,
-                endpoint,
-                supported_str
+                "Interval '{interval}' is not supported by {endpoint}. Accepted: {supported_str}"
             );
         }
 
@@ -201,10 +182,9 @@ impl AlphaVantageClient {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                     // Do NOT advance the month counter; retry the same month.
                     continue;
-                } else {
-                    println!("stopped ({msg})");
-                    break;
                 }
+                println!("stopped ({msg})");
+                break;
             }
 
             let raw: RawEquityResponse = serde_json::from_value(json).map_err(|e| {

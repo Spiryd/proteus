@@ -92,8 +92,7 @@ impl FeatureFamily {
     pub fn warmup_bars(&self) -> usize {
         match self {
             Self::LogReturn | Self::AbsReturn | Self::SquaredReturn => 1,
-            Self::RollingVol { window, .. } => *window,
-            Self::StandardizedReturn { window, .. } => *window,
+            Self::RollingVol { window, .. } | Self::StandardizedReturn { window, .. } => *window,
         }
     }
 

@@ -47,6 +47,8 @@ pub fn train_or_load_model_shared(
             ll_history: vec![],
             n_iter: 0,
             converged: false,
+            diagnostics: None,
+            multi_start_summary: None,
         });
     }
 
@@ -54,25 +56,69 @@ pub fn train_or_load_model_shared(
         TrainingMode::FitOffline => {
             let train_obs = &features.observations[..features.train_n.min(features.observations.len())];
             let k = cfg.model.k_regimes;
-            let init_params = init_params_from_obs(train_obs, k)?;
+            let n_starts = cfg.model.em_n_starts.max(1);
             let em_cfg = EmConfig {
                 tol: cfg.model.em_tol,
                 max_iter: cfg.model.em_max_iter,
                 var_floor: 1e-6,
             };
-            let em_result = fit_em(train_obs, init_params, &em_cfg)?;
+
+            // Run EM n_starts times; keep the result with the highest final
+            // log-likelihood (multi-start robustness).
+            let mut all_results: Vec<crate::model::em::EmResult> =
+                Vec::with_capacity(n_starts);
+            for _ in 0..n_starts {
+                let init_params = init_params_from_obs(train_obs, k)?;
+                if let Ok(r) = fit_em(train_obs, init_params, &em_cfg) {
+                    all_results.push(r);
+                }
+            }
+            if all_results.is_empty() {
+                anyhow::bail!("all {n_starts} EM start(s) failed");
+            }
+
+            // Run cross-run diagnostics when we have more than one result.
+            let multi_start_summary = if all_results.len() > 1 {
+                crate::model::compare_runs(&all_results, train_obs).ok()
+            } else {
+                None
+            };
+
+            // Pick the run with the highest final log-likelihood.
+            let best_idx = all_results
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| {
+                    let ll_a = a.ll_history.last().copied().unwrap_or(f64::NEG_INFINITY);
+                    let ll_b = b.ll_history.last().copied().unwrap_or(f64::NEG_INFINITY);
+                    ll_a.partial_cmp(&ll_b).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+
+            let em_result = all_results.swap_remove(best_idx);
             let converged = em_result.converged;
             let n_iter = em_result.n_iter;
             let ll_history = em_result.ll_history.clone();
             let params = em_result.params.clone();
+
+            // Run the post-fit trust diagnostic on the best result.
+            let diagnostics = crate::model::diagnose(&em_result, train_obs).ok();
+            let diagnostics_ok = diagnostics
+                .as_ref()
+                .map(|d| d.is_trustworthy)
+                .unwrap_or(converged);
+
             Ok(ModelArtifact {
                 source: "fitted".to_string(),
                 k_regimes: k,
-                diagnostics_ok: converged,
+                diagnostics_ok,
                 params: Some(params),
                 ll_history,
                 n_iter,
                 converged,
+                diagnostics,
+                multi_start_summary,
             })
         }
         TrainingMode::LoadFrozen { artifact_id } => {
@@ -90,6 +136,8 @@ pub fn train_or_load_model_shared(
                     ll_history: fps.ll_history,
                     n_iter: fps.n_iter,
                     converged: fps.converged,
+                    diagnostics: None,
+                    multi_start_summary: None,
                 })
             } else {
                 anyhow::bail!(
@@ -171,10 +219,18 @@ pub fn run_online_shared(
             });
             run_session!(detector)
         }
+        DetectorType::PosteriorTransitionTV => {
+            let detector = PosteriorTransitionDetector::new(PosteriorTransitionConfig {
+                score_kind: crate::detector::PosteriorTransitionScoreKind::TotalVariation,
+                threshold: det.threshold,
+                persistence,
+            });
+            run_session!(detector)
+        }
         DetectorType::Surprise => {
             let detector = SurpriseDetector::new(SurpriseConfig {
                 threshold: det.threshold,
-                ema_alpha: None,
+                ema_alpha: det.ema_alpha,
                 persistence,
             });
             run_session!(detector)

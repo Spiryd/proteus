@@ -21,5 +21,5 @@ pub use filter::{FilterResult, filter};
 pub use likelihood::{log_likelihood, log_likelihood_contributions};
 pub use pairwise::{PairwiseResult, pairwise};
 pub use params::ModelParams;
-pub use simulate::{SimulationResult, simulate};
+pub use simulate::{JumpParams, SimulationResult, simulate, simulate_with_jump};
 pub use smoother::{SmootherResult, smooth};

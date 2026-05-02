@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,23 +39,20 @@ impl MetricsTableBuilder {
         for row in &self.rows {
             let coverage_str = row
                 .coverage
-                .map(|v| format!("{:.3}", v))
-                .unwrap_or_default();
+                .map_or_else(String::new, |v| format!("{v:.3}"));
             let precision_str = row
                 .precision
-                .map(|v| format!("{:.3}", v))
-                .unwrap_or_default();
+                .map_or_else(String::new, |v| format!("{v:.3}"));
             let delay_mean_str = row
                 .delay_mean
-                .map(|v| format!("{:.2}", v))
-                .unwrap_or_default();
+                .map_or_else(String::new, |v| format!("{v:.2}"));
             let delay_median_str = row
                 .delay_median
-                .map(|v| format!("{:.2}", v))
-                .unwrap_or_default();
+                .map_or_else(String::new, |v| format!("{v:.2}"));
 
-            out.push_str(&format!(
-                "| {} | {} | {} | {:.2} | {} | {} | {} | {} | {} |\n",
+            let _ = writeln!(
+                out,
+                "| {} | {} | {} | {:.2} | {} | {} | {} | {} | {} |",
                 row.run_id,
                 row.scenario_or_asset,
                 row.detector_type,
@@ -64,7 +62,7 @@ impl MetricsTableBuilder {
                 precision_str,
                 delay_mean_str,
                 delay_median_str
-            ));
+            );
         }
 
         out
@@ -84,8 +82,9 @@ impl MetricsTableBuilder {
             let delay_mean_str = row.delay_mean.map(|v| v.to_string()).unwrap_or_default();
             let delay_median_str = row.delay_median.map(|v| v.to_string()).unwrap_or_default();
 
-            out.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{}\n",
+            let _ = writeln!(
+                out,
+                "{},{},{},{},{},{},{},{},{}",
                 row.run_id,
                 row.scenario_or_asset,
                 row.detector_type,
@@ -95,7 +94,7 @@ impl MetricsTableBuilder {
                 precision_str,
                 delay_mean_str,
                 delay_median_str
-            ));
+            );
         }
 
         out
@@ -115,23 +114,20 @@ impl MetricsTableBuilder {
         for row in &self.rows {
             let coverage_str = row
                 .coverage
-                .map(|v| format!("{:.3}", v))
-                .unwrap_or_else(|| "--".to_string());
+                .map_or_else(|| "--".to_string(), |v| format!("{v:.3}"));
             let precision_str = row
                 .precision
-                .map(|v| format!("{:.3}", v))
-                .unwrap_or_else(|| "--".to_string());
+                .map_or_else(|| "--".to_string(), |v| format!("{v:.3}"));
             let delay_mean_str = row
                 .delay_mean
-                .map(|v| format!("{:.2}", v))
-                .unwrap_or_else(|| "--".to_string());
+                .map_or_else(|| "--".to_string(), |v| format!("{v:.2}"));
             let delay_median_str = row
                 .delay_median
-                .map(|v| format!("{:.2}", v))
-                .unwrap_or_else(|| "--".to_string());
+                .map_or_else(|| "--".to_string(), |v| format!("{v:.2}"));
 
-            out.push_str(&format!(
-                "{} & {} & {} & {:.2} & {} & {} & {} & {} & {} \\\\\n",
+            let _ = writeln!(
+                out,
+                "{} & {} & {} & {:.2} & {} & {} & {} & {} & {} \\\\",
                 row.run_id,
                 row.scenario_or_asset,
                 row.detector_type,
@@ -141,7 +137,7 @@ impl MetricsTableBuilder {
                 precision_str,
                 delay_mean_str,
                 delay_median_str
-            ));
+            );
         }
 
         out.push_str("\\hline\n");

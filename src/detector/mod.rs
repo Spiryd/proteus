@@ -274,8 +274,7 @@ pub(crate) fn dominant_regime(filtered: &[f64]) -> usize {
         .iter()
         .enumerate()
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, _)| i)
-        .unwrap_or(0)
+        .map_or(0, |(i, _)| i)
 }
 
 // =========================================================================

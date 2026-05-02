@@ -26,7 +26,19 @@ src/model/diagnostics.rs   ← only diagnostics file
 
 `diagnostics.rs` is a pure consumer.  It calls `filter`, `smooth`, and
 `pairwise`, reads `ModelParams` and `EmResult` fields, and has no reverse
-dependencies.  Nothing in the inference or estimation stack calls back into it.
+dependencies inside the model stack.
+
+`diagnose()` and `compare_runs()` are called automatically from
+`experiments::shared::train_or_load_model_shared()` after every EM fit.
+Results are stored in `ModelArtifact` and exported by the runner to:
+
+- `diagnostics.json` — written for every run,
+- `multi_start_summary.json` — written when `ModelConfig::em_n_starts > 1`.
+
+Diagnostic warnings are propagated into `ExperimentResult::warnings` with the
+prefix `"diagnostic: "`.  Multi-start warnings use the prefix `"multi_start: "`.
+`ModelArtifact::diagnostics_ok` is set to `FittedModelDiagnostics::is_trustworthy`
+rather than the raw EM `converged` flag.
 
 ---
 

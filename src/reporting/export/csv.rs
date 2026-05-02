@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use super::schema::*;
+use super::schema::{AlarmRecord, FeatureTraceRecord, MatchedEventRecord, RegimePosteriorRecord, ScoreTraceRecord, SegmentRecord};
 use csv::Writer;
 use std::path::Path;
 

@@ -161,7 +161,7 @@ impl RealBackend {
             && !start_str.is_empty()
         {
             let start = NaiveDate::parse_from_str(start_str, "%Y-%m-%d")
-                .map_err(|_| anyhow::anyhow!("Invalid date_start '{}': expected YYYY-MM-DD", start_str))?
+                .map_err(|_| anyhow::anyhow!("Invalid date_start '{start_str}': expected YYYY-MM-DD"))?
                 .and_hms_opt(0, 0, 0)
                 .unwrap();
             series.observations.retain(|o| o.timestamp >= start);
@@ -171,7 +171,7 @@ impl RealBackend {
         {
             // End of the given day
             let end = NaiveDate::parse_from_str(end_str, "%Y-%m-%d")
-                .map_err(|_| anyhow::anyhow!("Invalid date_end '{}': expected YYYY-MM-DD", end_str))?
+                .map_err(|_| anyhow::anyhow!("Invalid date_end '{end_str}': expected YYYY-MM-DD"))?
                 .and_hms_opt(23, 59, 59)
                 .unwrap();
             series.observations.retain(|o| o.timestamp <= end);
@@ -229,14 +229,12 @@ impl RealBackend {
         }
         let json = std::fs::read_to_string(proxy_events_path).map_err(|e| {
             anyhow::anyhow!(
-                "Cannot read proxy events file '{}': {e}",
-                proxy_events_path
+                "Cannot read proxy events file '{proxy_events_path}': {e}"
             )
         })?;
         serde_json::from_str(&json).map_err(|e| {
             anyhow::anyhow!(
-                "Failed to parse proxy events JSON from '{}': {e}",
-                proxy_events_path
+                "Failed to parse proxy events JSON from '{proxy_events_path}': {e}"
             )
         })
     }
@@ -264,8 +262,7 @@ impl ExperimentBackend for RealBackend {
             }
             DataConfig::Synthetic { dataset_id, .. } => {
                 anyhow::bail!(
-                    "RealBackend::resolve_data called with Synthetic DataConfig (dataset_id={:?})",
-                    dataset_id
+                    "RealBackend::resolve_data called with Synthetic DataConfig (dataset_id={dataset_id:?})"
                 );
             }
         };
@@ -625,12 +622,14 @@ mod tests {
                 training: TrainingMode::FitOffline,
                 em_max_iter: 10,
                 em_tol: 1e-4,
+                em_n_starts: 1,
             },
             detector: DetectorConfig {
                 detector_type: DetectorType::HardSwitch,
                 threshold: 0.6,
                 persistence_required: 1,
                 cooldown: 0,
+                ema_alpha: None,
             },
             evaluation: EvaluationConfig::Real {
                 proxy_events_path: proxy_path.to_string(),
@@ -688,12 +687,14 @@ mod tests {
                 training: TrainingMode::FitOffline,
                 em_max_iter: 10,
                 em_tol: 1e-5,
+                em_n_starts: 1,
             },
             detector: DetectorConfig {
                 detector_type: DetectorType::Surprise,
                 threshold: 2.0,
                 persistence_required: 1,
                 cooldown: 0,
+                ema_alpha: None,
             },
             evaluation: EvaluationConfig::Synthetic { matching_window: 5 },
             output: OutputConfig {
@@ -867,7 +868,6 @@ mod tests {
     fn resolve_data_train_n_is_seventy_percent() {
         use crate::alphavantage::commodity::{CommodityDataPoint, CommodityResponse};
         use crate::cache::CommodityCache;
-        use chrono::NaiveDateTime;
 
         let tmp = tempfile_path("test_real_backend_train_n.duckdb");
         let cache = CommodityCache::open(&tmp).expect("open");
@@ -875,12 +875,13 @@ mod tests {
         // Generate 100 synthetic daily points.
         let data: Vec<CommodityDataPoint> = (0..100_u64)
             .map(|i| CommodityDataPoint {
-                date: NaiveDateTime::from_timestamp_opt(
+                date: chrono::DateTime::from_timestamp(
                     // 2020-01-01 + i days
                     1577836800 + i as i64 * 86400,
                     0,
                 )
-                .unwrap(),
+                .unwrap()
+                .naive_utc(),
                 value: 100.0 + i as f64,
             })
             .collect();
@@ -914,12 +915,14 @@ mod tests {
                 training: TrainingMode::FitOffline,
                 em_max_iter: 10,
                 em_tol: 1e-4,
+                em_n_starts: 1,
             },
             detector: DetectorConfig {
                 detector_type: DetectorType::Surprise,
                 threshold: 2.0,
                 persistence_required: 1,
                 cooldown: 0,
+                ema_alpha: None,
             },
             evaluation: EvaluationConfig::Real {
                 proxy_events_path: String::new(),
@@ -954,7 +957,6 @@ mod tests {
     fn full_pipeline_with_fixture_data() {
         use crate::alphavantage::commodity::{CommodityDataPoint, CommodityResponse};
         use crate::cache::CommodityCache;
-        use chrono::NaiveDateTime;
 
         let tmp = tempfile_path("test_real_backend_full_pipeline.duckdb");
         let cache = CommodityCache::open(&tmp).expect("open");
@@ -965,11 +967,12 @@ mod tests {
                 // Simple random walk: start at 400, ±1 % per day.
                 let price = 400.0 * (1.0 + 0.001 * (i as f64 % 17.0 - 8.0));
                 CommodityDataPoint {
-                    date: NaiveDateTime::from_timestamp_opt(
+                    date: chrono::DateTime::from_timestamp(
                         1577836800 + i as i64 * 86400,
                         0,
                     )
-                    .unwrap(),
+                    .unwrap()
+                    .naive_utc(),
                     value: price,
                 }
             })
@@ -1004,12 +1007,14 @@ mod tests {
                 training: TrainingMode::FitOffline,
                 em_max_iter: 50,
                 em_tol: 1e-5,
+                em_n_starts: 1,
             },
             detector: DetectorConfig {
                 detector_type: DetectorType::HardSwitch,
                 threshold: 0.55,
                 persistence_required: 2,
                 cooldown: 5,
+                ema_alpha: None,
             },
             evaluation: EvaluationConfig::Real {
                 proxy_events_path: String::new(),

@@ -1,8 +1,22 @@
 #![allow(dead_code)]
 use rand::Rng;
-use rand_distr::{Distribution, Normal, weighted::WeightedIndex};
+use rand_distr::{Distribution, Normal, Uniform, weighted::WeightedIndex};
 
 use super::params::ModelParams;
+
+/// Optional jump-contamination parameters for `simulate_with_jump`.
+///
+/// After each base Gaussian draw, with probability `prob` an independent shock
+/// N(0, (scale_mult × σⱼ)²) is added, where σⱼ is the std-dev of the active
+/// regime.  This models outlier contamination without altering the Markov
+/// transition structure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JumpParams {
+    /// Probability that any single observation receives a jump shock.
+    pub prob: f64,
+    /// Shock std-dev expressed as a multiplier of the active-regime std-dev.
+    pub scale_mult: f64,
+}
 
 /// The complete output of one simulation run.
 ///
@@ -82,6 +96,48 @@ pub fn simulate(
     let observations = simulate_observations(&params, &states, rng);
     let k = params.k;
 
+    Ok(SimulationResult {
+        t,
+        k,
+        states,
+        observations,
+        params,
+    })
+}
+
+/// Simulate with optional Bernoulli jump contamination.
+///
+/// Equivalent to [`simulate`] when `jump` is `None`.  When `jump` is `Some`,
+/// each observation has independent probability `jump.prob` of receiving an
+/// additive shock drawn from N(0, (jump.scale_mult × σⱼ)²), where σⱼ is the
+/// std-dev of the active regime at that time step.
+pub fn simulate_with_jump(
+    params: ModelParams,
+    t: usize,
+    rng: &mut impl Rng,
+    jump: Option<&JumpParams>,
+) -> anyhow::Result<SimulationResult> {
+    if t < 1 {
+        anyhow::bail!("simulate_with_jump: T must be ≥ 1, got {t}");
+    }
+    params.validate()?;
+
+    let states = simulate_hidden_path(&params, t, rng);
+    let mut observations = simulate_observations(&params, &states, rng);
+
+    if let Some(j) = jump {
+        let uniform = Uniform::new(0.0_f64, 1.0).expect("valid uniform range");
+        for (obs, &state) in observations.iter_mut().zip(states.iter()) {
+            if uniform.sample(rng) < j.prob {
+                let regime_std = params.variances[state].sqrt();
+                let shock_std = j.scale_mult * regime_std;
+                let shock_dist = Normal::new(0.0_f64, shock_std).expect("shock_std > 0");
+                *obs += shock_dist.sample(rng);
+            }
+        }
+    }
+
+    let k = params.k;
     Ok(SimulationResult {
         t,
         k,
@@ -323,13 +379,9 @@ mod tests {
             return 0.0;
         }
         let mut runs = 0usize;
-        let mut run_len = 1usize;
         for i in 1..states.len() {
-            if states[i] == states[i - 1] {
-                run_len += 1;
-            } else {
+            if states[i] != states[i - 1] {
                 runs += 1;
-                run_len = 1;
             }
         }
         // Count the final run.

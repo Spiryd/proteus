@@ -10,6 +10,7 @@ pub struct RegimePosteriorPlotInput {
     pub title: String,
 }
 
+#[cfg(not(test))]
 pub fn render_regime_posteriors(
     input: &RegimePosteriorPlotInput,
     output_path: &Path,
@@ -23,7 +24,7 @@ pub fn render_regime_posteriors(
 
     let min_ts = input.timestamps[0].timestamp();
     let max_ts = input.timestamps.last().unwrap().timestamp();
-    let k = input.posteriors.first().map(|p| p.len()).unwrap_or(1);
+    let k = input.posteriors.first().map_or(1, Vec::len);
 
     let mut chart = ChartBuilder::on(&root)
         .caption(&input.title, ("sans-serif", 30))
@@ -44,7 +45,7 @@ pub fn render_regime_posteriors(
         let color = colors[j % colors.len()];
         chart.draw_series(input.posteriors.iter().enumerate().map(|(i, post_vec)| {
             let x = input.timestamps[i].timestamp() as f64;
-            let y = post_vec.get(j).cloned().unwrap_or(0.0);
+            let y = post_vec.get(j).copied().unwrap_or(0.0);
             Circle::new((x, y), 1, color)
         }))?;
     }

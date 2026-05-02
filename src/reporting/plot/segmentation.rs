@@ -31,12 +31,12 @@ pub fn render_segmentation(
     let min_obs = input
         .observations
         .iter()
-        .cloned()
+        .copied()
         .fold(f64::INFINITY, f64::min);
     let max_obs = input
         .observations
         .iter()
-        .cloned()
+        .copied()
         .fold(f64::NEG_INFINITY, f64::max);
 
     let mut chart = ChartBuilder::on(&root)
