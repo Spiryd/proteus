@@ -2020,7 +2020,7 @@ fn print_help() {
     println!("  run-experiment  --config <path.json>         Run single experiment (DryRun/Synthetic)");
     println!("  run-batch       --config a.json [...]        Run batch from files");
     println!("  run-real        --id <id> [--cache <path>]   Run a real-data experiment by registry ID");
-    println!("  calibrate       --id <id> [--out <dir>]      Calibrate a synthetic experiment");
+    println!("  calibrate       --id <id> [--cache <path>]   Calibrate any experiment (synthetic or real)");
     println!("  compare-runs    --dir <dir> [--dir <dir> ...]  Aggregate metrics across run dirs");
     println!("                  [--save <path>]");
     println!("  inspect         --dir <run-directory>        Inspect run artifacts");
