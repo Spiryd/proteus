@@ -1,5 +1,4 @@
-#![allow(dead_code)]
-/// Pairwise posterior transition probabilities for the Gaussian Markov Switching Model.
+const DENOM_FLOOR: f64 = 1e-300;
 ///
 /// # Mathematical specification
 ///
@@ -90,8 +89,8 @@ use super::smoother::SmootherResult;
 
 /// Minimum predicted probability below which the denominator is treated as zero.
 /// Identical to the guard in `smoother.rs`.
-const DENOM_FLOOR: f64 = 1e-300;
-
+/// Pairwise posterior transition probabilities for the Gaussian Markov Switching Model.
+///
 /// The complete output of one pairwise-posterior pass.
 ///
 /// Contains the (T-1) × K × K tensor of joint posterior transition probabilities
@@ -99,8 +98,10 @@ const DENOM_FLOOR: f64 = 1e-300;
 #[derive(Debug, Clone)]
 pub struct PairwiseResult {
     /// T — number of observations (same as the FilterResult it was derived from).
+    #[allow(dead_code)]
     pub t: usize,
     /// K — number of regimes.
+    #[allow(dead_code)]
     pub k: usize,
     /// `xi[s][i][j]` = ξ_{s+2}(i,j) = Pr(S_{s+1}=i, S_{s+2}=j | y_{1:T}).
     ///

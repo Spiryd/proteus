@@ -283,6 +283,41 @@ to be built on top.
 
 ---
 
+## Implementation Note: Two Streaming APIs
+
+Two code paths advance the filter step-by-step.
+
+### `OnlineFilterState` — production path
+
+```rust
+// src/detector/frozen.rs  (also re-exported via experiments/shared.rs)
+let mut state = OnlineFilterState::new(&params);
+for obs in stream {
+    let step = state.step(obs);   // returns FilterStep { predicted, filtered, log_p }
+    // detector sees step.log_p
+}
+```
+
+`OnlineFilterState` is the path called by `ExperimentRunner::run` via
+`src/experiments/shared.rs::run_online_detection`.  It is the **only path
+that produces thesis results**.
+
+### `StreamingSession` — demo / manual testing wrapper
+
+`StreamingSession` (also in `src/detector/frozen.rs`) is a higher-level
+convenience struct that wraps `OnlineFilterState` together with a
+`ChangePointDetector`.  It is **not** called from the experiment runner and
+does not appear in any registered experiment.  It exists for:
+
+- interactive demos and CLI probing,
+- unit tests that want a one-shot session lifecycle,
+- future work that adds a REPL-style streaming interface.
+
+Both paths produce identical filter numerics — they share the same
+`ModelParams` and call the same `filter::predict` / `bayes_update` internals.
+
+---
+
 ## References
 
 - Hamilton, J. D. (1989). *A new approach to the economic analysis of

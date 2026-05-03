@@ -16,6 +16,7 @@ cargo run -- run-batch --config a.json --config b.json [--save <dir>]
 cargo run -- run-real  --id <experiment_id> [--cache <path.duckdb>] [--save <dir>]
 cargo run -- calibrate --id <experiment_id> [--out <dir>]
 cargo run -- inspect --dir ./runs/real/my_run/run_001
+cargo run -- generate-report --dir ./runs/real/my_run/run_001 [--cache <path.duckdb>]
 cargo run -- status
 cargo run -- help
 ```
@@ -140,9 +141,15 @@ The six registered experiment IDs are:
 | `hard_switch` | Synthetic | HardSwitch, 2-regime, LogReturn/ZScore |
 | `posterior_transition` | Synthetic | PosteriorTransition, 2-regime, LogReturn/ZScore |
 | `surprise` | Synthetic | Surprise, 2-regime, LogReturn/ZScore |
+| `posterior_transition_tv` | Synthetic | PosteriorTransitionTV, 2-regime, LogReturn/ZScore |
+| `hard_switch_shock` | Synthetic | HardSwitch, shock-contaminated (jump noise path) |
+| `hard_switch_frozen` | Synthetic | HardSwitch, loads pre-fitted model from `data/frozen_models/hard_switch_frozen` |
+| `hard_switch_multi_start` | Synthetic | HardSwitch, multi-start EM (3 starts) |
 | `real_spy_daily_hard_switch` | Real | SPY daily, HardSwitch, 2018–present |
 | `real_wti_daily_surprise` | Real | WTI daily, Surprise, 2018–present |
-| `real_spy_intraday_hard_switch` | Real | SPY 15-min session-aware, HardSwitch, 2022–2025 |
+| `real_spy_intraday_hard_switch` | Real | SPY 15-min RTH session-aware, HardSwitch, 2022–2025 |
+
+For intraday experiments (`real_spy_intraday_hard_switch`), the pipeline automatically applies a **Regular Trading Hours (RTH) filter** — only bars within 09:30–15:59 ET are kept. Pre-market and after-hours bars are excluded before training and detection.
 
 Each real run produces 16 artifacts in `runs/real/<id>/<run_id>/`.
 
@@ -195,6 +202,11 @@ Flags:
 | `--top` | `10` | Rows shown in the printed ranking table |
 | `--model` | off | Enable joint model + detector search |
 
+> **Note (debug builds):** In debug mode (`cargo run` without `--release`) each EM
+> fit is approximately 200× slower. The `optimize` command prints an estimated
+> time for your grid size when running in debug mode and recommends
+> `cargo build --release` for any grid larger than a few dozen points.
+
 Default grids by detector type:
 
 | Detector | Threshold range | Grid points (detector) | Joint grid points (×10 model combos) |
@@ -218,6 +230,10 @@ Artifacts written to `--save`:
 
 ### `run-batch`
 
+> **WARNING:** `run-batch` uses `DryRunBackend` — no real data is loaded. All
+> metrics (alarms, coverage, precision) are synthetic mock values. For real-data
+> experiments, use `run-real --id <id>` instead.
+
 Runs a list of JSON experiment configs in sequence:
 
 ```
@@ -225,6 +241,17 @@ cargo run -- run-batch --config a.json --config b.json --save ./batch_out
 ```
 
 Writes `batch_summary.json` to the save directory with per-run status, IDs, and metrics.
+
+### `generate-report`
+
+Regenerates all plots and JSON artifacts for an existing run by replaying its recorded `config.snapshot.json`:
+
+```
+cargo run -- generate-report --dir ./runs/real/my_run/run_001
+cargo run -- generate-report --dir ./runs/real/my_run/run_001 --cache data/commodities.duckdb
+```
+
+The command reads `<dir>/config.snapshot.json`, re-runs the full pipeline (including EM fitting), and writes a fresh artifact set with a new `run_id`. Files in the original run directory are **not** overwritten. Use `--cache` to specify a DuckDB path for real-data experiments (defaults to `data/commodities.duckdb`).
 
 ## Cancellation
 

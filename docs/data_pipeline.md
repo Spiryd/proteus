@@ -270,6 +270,10 @@ Typical usage:
 let rth_obs = filter_rth(&series.observations);
 ```
 
+**Pipeline integration:** The RTH filter is applied automatically in `RealBackend::load_clean_series()` for all non-daily frequencies. Pre-market and after-hours bars are removed before any feature construction, model fitting, or online detection. The filter is applied after the date-range window is applied and before the series is passed to the feature pipeline. A minimum of 10 observations must remain after filtering; otherwise the run fails with a descriptive error.
+
+For daily data, the RTH filter is not applied (calendar-date bars have no intraday session structure).
+
 ### 8.3 Overnight gaps
 
 After RTH filtering, consecutive sessions are separated by an overnight gap:

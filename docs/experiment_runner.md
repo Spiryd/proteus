@@ -121,7 +121,8 @@ A complete result must include:
 3. Summaries:
    - model summary (includes fitted params: π, P, means, variances, LL history, n_iter, converged),
    - detector summary (includes alarm indices),
-   - evaluation summary (synthetic or real, includes full MetricSuite: precision, recall, miss rate, FAR, delay mean + median).
+   - evaluation summary (synthetic or real, includes full MetricSuite: precision, recall, miss rate, FAR, delay mean + median),
+   - `n_feature_obs` — number of feature observations produced by the feature pipeline after warmup trimming (populated for all real and synthetic backends; `None` for `DryRunBackend`).
 4. Trace data (populated only when `save_traces = true`):
    - score trace (per-step detector score),
    - regime posteriors (T × K filtered probabilities).
@@ -198,12 +199,12 @@ Minimal export set:
 - `config.snapshot.json` — exact ExperimentConfig snapshot,
 - `result.json` — full ExperimentResult,
 - `summary.json` — lightweight metrics summary,
-- `model_params.json` — fitted ModelParams (reloadable via `LoadFrozen`),
+- `model_params.json` — fitted ModelParams (reloadable via `LoadFrozen`; the `hard_switch_frozen` registered experiment demonstrates round-trip loading from `data/frozen_models/hard_switch_frozen/model_params.json`),
 - `fit_summary.json` — human-readable EM fit metadata: K, n_iter, converged, log_likelihood_initial/final, convergence_reason,
 - `loglikelihood_history.csv` — log-likelihood at each EM iteration (`iteration,log_likelihood`),
 - `feature_summary.json` — feature pipeline metadata: label, n_obs, train_n, val_n, obs_mean/variance/std/min/max, scaling, session_aware,
 - `diagnostics.json` — post-fit trust bundle (`is_trustworthy`, `warnings`, `param_validity`, `posterior_validity`, `convergence`, `regimes`),
-- `multi_start_summary.json` — cross-run stability report (only when `em_n_starts > 1`).
+- `multi_start_summary.json` — cross-run stability report (only when `em_n_starts > 1`; produced by the `hard_switch_multi_start` registered experiment and any config with `em_n_starts ≥ 2`).
 
 Additional artifacts saved when `save_traces = true`:
 
@@ -379,3 +380,51 @@ cargo run -- optimize --id real_spy_intraday_hard_switch --model --top 20
 The `optimize` and `optimize_full` functions are exported from `experiments::search`
 and accept any `ExperimentBackend`, making them testable with `DryRunBackend` and
 reusable in batch workflows.
+
+---
+
+## 12. Canonical Export Path
+
+Two code paths write JSON artifacts for a run.  The **canonical path** used
+by `ExperimentRunner::run` calls low-level helpers in
+`src/experiments/artifact.rs` directly:
+
+```
+ExperimentRunner::run
+  → snapshot_config(...)   → config.snapshot.json
+  → snapshot_result(...)   → result.json
+  → write_json_file(...)   → model_params.json, fit_summary.json, …
+  → RunReporter::generate_tables(...)  → metrics.md, metrics.csv, metrics.tex
+```
+
+`RunReporter::export_run` (in `src/reporting/report.rs`) is a **secondary
+path** used only by `direct_generate_report` and `direct_inspect`.  It
+writes the same `config.snapshot.json` + `result.json` pair via a
+different code route.  There are therefore two code paths that produce
+equivalent JSON outputs.
+
+**For thesis purposes:**  all run artifacts cited in the thesis originate
+from the canonical `ExperimentRunner::run` path.  `RunReporter::export_run`
+is not invoked during normal `e2e`, `run-real`, or `optimize` runs.
+
+---
+
+## 13. DryRunBackend Scope
+
+`DryRunBackend` is used by two subcommands:
+
+| Subcommand | Backend | Math stack exercised? |
+|---|---|---|
+| `run-experiment` | `DryRunBackend` | No — all metrics are mocks |
+| `run-batch` | `DryRunBackend` | No — all metrics are mocks |
+| `e2e` | `SyntheticBackend` | Yes |
+| `run-real` | `RealBackend` | Yes |
+| `optimize` | `RealBackend` | Yes |
+
+`run-experiment` and `run-batch` are **pipeline validation** tools: they
+exercise the config, runner, and artifact-writing machinery without running
+EM, the filter, or the detector.
+
+**For thesis results:** only `e2e`, `run-real`, and `optimize` outputs are
+scientifically meaningful.  Both `run-experiment` subcommands print a
+WARNING message to `stderr` to make this clear.

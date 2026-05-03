@@ -184,6 +184,19 @@ impl RealBackend {
             );
         }
 
+        // Apply RTH filter for intraday data: keep only bars in the 09:30–15:59
+        // ET window.  This removes pre-market and after-hours bars so that the
+        // model is trained and evaluated exclusively on Regular Trading Hours.
+        if !matches!(frequency, RealFrequency::Daily) {
+            series.observations = crate::data::filter_rth(&series.observations);
+            if series.observations.len() < 10 {
+                anyhow::bail!(
+                    "Too few observations after RTH filter for {} ({}): {} bars found.",
+                    asset, interval.as_str(), series.observations.len()
+                );
+            }
+        }
+
         Ok(series)
     }
 

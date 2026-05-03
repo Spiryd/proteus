@@ -19,6 +19,8 @@ pub fn render_segmentation(
     input: &SegmentationPlotInput,
     output_path: &Path,
 ) -> anyhow::Result<()> {
+    use chrono::{TimeZone, Utc};
+
     let root = BitMapBackend::new(output_path, (1200, 600)).into_drawing_area();
     root.fill(&WHITE)?;
 
@@ -26,8 +28,8 @@ pub fn render_segmentation(
         return Ok(());
     }
 
-    let min_ts = input.timestamps[0].timestamp();
-    let max_ts = input.timestamps.last().unwrap().timestamp();
+    let min_ts = input.timestamps[0].timestamp() as f64;
+    let max_ts = input.timestamps.last().unwrap().timestamp() as f64;
     let min_obs = input
         .observations
         .iter()
@@ -42,12 +44,19 @@ pub fn render_segmentation(
     let mut chart = ChartBuilder::on(&root)
         .caption(&input.title, ("sans-serif", 30))
         .margin(15)
-        .x_label_area_size(30)
+        .x_label_area_size(40)
         .y_label_area_size(60)
-        .build_cartesian_2d((min_ts as f64)..(max_ts as f64), min_obs..max_obs)?;
+        .build_cartesian_2d(min_ts..max_ts, min_obs..max_obs)?;
 
     chart
         .configure_mesh()
+        .x_label_style(("sans-serif", 12))
+        .x_label_formatter(&|ts: &f64| {
+            Utc.timestamp_opt(*ts as i64, 0)
+                .single()
+                .map(|dt| dt.format("%Y-%m-%d").to_string())
+                .unwrap_or_default()
+        })
         .y_label_style(("sans-serif", 15))
         .y_desc("Observations")
         .draw()?;

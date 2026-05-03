@@ -19,7 +19,7 @@ fn is_direct_command(s: &str) -> bool {
     matches!(
         s,
         "e2e" | "param-search" | "run-experiment" | "run-batch" | "run-real" | "calibrate"
-            | "optimize" | "inspect" | "status" | "help"
+            | "compare-runs" | "optimize" | "inspect" | "status" | "help" | "generate-report"
     )
 }
 

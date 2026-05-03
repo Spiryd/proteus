@@ -197,11 +197,11 @@ Every run produces artifacts in several families. Each family serves a distinct 
 **Purpose:** Visualize results in human-readable form.
 
 **Contents:**
-- Signal + alarms plot (PNG/PDF): time series with true changepoints (synthetic) or real events (real), detector alarms overlaid.
-- Detector score plot (PNG/PDF): score trace vs threshold, with alarm markers.
-- Posterior regime plot (PNG/PDF): regime posterior probabilities stacked over time.
-- Segmentation plot (real only, PNG/PDF): segments with boundaries, color-coded by detected/undetected.
-- Delay distribution (synthetic only, PNG/PDF): histogram of detection delays or false alarm times.
+- Signal + alarms plot (PNG): time series with true changepoints (synthetic) or real events (real), detector alarms overlaid. The x-axis displays formatted calendar dates (`YYYY-MM-DD`).
+- Detector score plot (PNG): score trace vs threshold, with alarm markers. The x-axis displays formatted calendar dates.
+- Posterior regime plot (PNG): regime posterior probabilities stacked over time. The x-axis displays formatted calendar dates.
+- Segmentation plot (real only, PNG): segments with boundaries, color-coded by detected/undetected. The x-axis displays formatted calendar dates.
+- Delay distribution (synthetic only, PNG): histogram of detection delays or false alarm times.
 
 **File examples:**
 - `signal_with_alarms.png`
@@ -287,11 +287,11 @@ run_<config_hash_hex16>_<seed>/
 ├── metrics.csv                    — per-run metrics table (CSV)
 ├── metrics.tex                    — per-run metrics table (LaTeX)
 └── plots/
-    ├── signal_with_alarms.png     — pending
-    ├── detector_scores.png        — pending
-    ├── regime_posteriors.png      — pending
-    ├── delay_distribution.png     — pending (synthetic only)
-    └── segmentation.png           — pending (real only)
+    ├── signal_with_alarms.png     — time series with alarm markers (x-axis: YYYY-MM-DD)
+    ├── detector_scores.png        — score trace + threshold line (x-axis: YYYY-MM-DD)
+    ├── regime_posteriors.png      — filtered posterior traces per regime (x-axis: YYYY-MM-DD)
+    ├── delay_distribution.png     — detection delay histogram (synthetic only)
+    └── segmentation.png           — segment-coloured real-data plot (real only, x-axis: YYYY-MM-DD)
 ```
 
 ### 5.3 Design Rationale
@@ -701,7 +701,8 @@ Every artifact is:
 - **Self-describing:** Includes metadata, summaries, and documentation.
 
 This enables thesis-scale empirical studies where:
-- Figures can be regenerated on demand.
+- Figures can be regenerated on demand (use `generate-report --dir <run-dir>`).
 - Metrics can be re-extracted or re-analyzed.
-- Experiments can be compared systematically.
+- Experiments can be compared systematically (use `compare-runs --dir <run1> --dir <run2>`).
+  The comparison table includes `Detector`, `Threshold`, and `Alarms` columns populated from each run's `result.json`.
 - Conclusions are grounded in persisted, auditable results.

@@ -113,16 +113,25 @@ impl AggregateReporter {
     /// Build a combined metrics table (Markdown) from all run evaluation
     /// summaries.  Runs whose summary file cannot be read are silently
     /// skipped.
+    ///
+    /// Tries `root/results/evaluation_summary.json` first (legacy
+    /// `RunArtifactLayout` path), then falls back to `root/summary.json`
+    /// (the flat layout written by the experiment runner).
     pub fn generate_comparison_table(&self) -> anyhow::Result<String> {
         use crate::experiments::EvaluationSummary;
 
         let mut builder = MetricsTableBuilder::new();
 
         for layout in &self.runs {
-            let summary_path = layout.evaluation_summary_path();
-            let Ok(json) = std::fs::read_to_string(&summary_path) else {
-                continue;
-            };
+            // Try the nested layout path first, then fall back to flat root layout.
+            let candidate_paths = [
+                layout.evaluation_summary_path(),
+                layout.root.join("summary.json"),
+            ];
+            let json = candidate_paths
+                .iter()
+                .find_map(|p| std::fs::read_to_string(p).ok());
+            let Some(json) = json else { continue };
             let Ok(eval) = serde_json::from_str::<EvaluationSummary>(&json) else {
                 continue;
             };
@@ -143,12 +152,23 @@ impl AggregateReporter {
                     ..
                 } => (Some(*event_coverage), Some(*alarm_relevance)),
             };
+
+            // Try to read result.json for detector metadata.
+            let (detector_type, threshold, n_alarms) = std::fs::read_to_string(
+                layout.root.join("result.json"),
+            )
+            .ok()
+            .and_then(|s| serde_json::from_str::<ExperimentResult>(&s).ok())
+            .and_then(|r| r.detector_summary)
+            .map(|ds| (ds.detector_type, ds.threshold, ds.n_alarms))
+            .unwrap_or_else(|| (String::new(), 0.0, 0));
+
             builder.add_row(MetricsTableRow {
                 run_id: layout.run_id.clone(),
                 scenario_or_asset: layout.run_id.clone(),
-                detector_type: String::new(),
-                threshold: 0.0,
-                n_alarms: 0,
+                detector_type,
+                threshold,
+                n_alarms,
                 coverage,
                 precision,
                 delay_mean: None,

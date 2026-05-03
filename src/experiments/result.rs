@@ -120,6 +120,9 @@ pub struct ExperimentResult {
     pub score_trace: Vec<f64>,
     /// Filtered regime posteriors at each step (T × K); populated only when save_traces = true.
     pub regime_posteriors: Vec<Vec<f64>>,
+    /// Number of feature observations produced by the feature pipeline
+    /// (after warmup trimming).  Populated by all real and synthetic backends.
+    pub n_feature_obs: Option<usize>,
 }
 
 impl ExperimentResult {

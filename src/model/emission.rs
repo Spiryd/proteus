@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// Regime-conditional Gaussian emission model for the Markov Switching Model.
 ///
 /// # Mathematical specification
@@ -80,6 +79,7 @@ impl Emission {
     /// 3. Every σⱼ² is strictly positive.
     ///
     /// Returns an error with a descriptive message on the first violation found.
+    #[allow(dead_code)]
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.means.len() != self.variances.len() {
             anyhow::bail!(
@@ -131,6 +131,7 @@ impl Emission {
     ///
     /// # Panics
     /// Panics if `j >= self.k`.
+    #[allow(dead_code)]
     pub fn density(&self, y: f64, j: usize) -> f64 {
         self.log_density(y, j).exp()
     }
@@ -142,6 +143,7 @@ impl Emission {
     /// This is the method the forward filter will call once per time step,
     /// treating the per-regime log-densities as likelihood contributions
     /// before combining them with the predicted state probabilities.
+    #[allow(dead_code)]
     pub fn log_density_vec(&self, y: f64) -> Vec<f64> {
         (0..self.k).map(|j| self.log_density(y, j)).collect()
     }
@@ -149,6 +151,7 @@ impl Emission {
     /// Density of observation `y` under **every** regime.
     ///
     /// Returns a `Vec<f64>` of length K where entry `j` equals `fⱼ(y)`.
+    #[allow(dead_code)]
     pub fn density_vec(&self, y: f64) -> Vec<f64> {
         (0..self.k).map(|j| self.density(y, j)).collect()
     }

@@ -36,6 +36,22 @@ pub struct SimulationResult {
     pub params: ModelParams,
 }
 
+impl SimulationResult {
+    /// Return the 1-based time indices where the hidden regime changed.
+    ///
+    /// A changepoint at index `t` means `states[t-1] != states[t-2]`
+    /// (i.e. the regime at time `t` differs from the regime at time `t-1`).
+    /// The first observation (t=1) can never be a changepoint.
+    ///
+    /// Returns an empty vec when `T ≤ 1` or the regime never changes.
+    pub fn changepoints(&self) -> Vec<usize> {
+        (1..self.states.len())
+            .filter(|&i| self.states[i] != self.states[i - 1])
+            .map(|i| i + 1) // convert 0-based index to 1-based time step
+            .collect()
+    }
+}
+
 /// Simulate the full hidden regime path S₁,…,S_T.
 ///
 /// - S₁ ~ π  (categorical draw from the initial distribution)
@@ -387,5 +403,115 @@ mod tests {
         // Count the final run.
         runs += 1;
         states.len() as f64 / runs as f64
+    }
+
+    // ------------------------------------------------------------------
+    // SimulationResult::changepoints tests
+    // ------------------------------------------------------------------
+
+    /// Empty state path → no changepoints.
+    #[test]
+    fn changepoints_empty_states() {
+        let params = persistent_2state();
+        let result = SimulationResult {
+            t: 0,
+            k: 2,
+            states: vec![],
+            observations: vec![],
+            params,
+        };
+        assert!(result.changepoints().is_empty());
+    }
+
+    /// Single-observation path → no changepoints (nothing to compare against).
+    #[test]
+    fn changepoints_single_observation() {
+        let params = persistent_2state();
+        let result = SimulationResult {
+            t: 1,
+            k: 2,
+            states: vec![0],
+            observations: vec![1.0],
+            params,
+        };
+        assert!(result.changepoints().is_empty());
+    }
+
+    /// Constant regime path → no changepoints.
+    #[test]
+    fn changepoints_no_switch() {
+        let params = persistent_2state();
+        let result = SimulationResult {
+            t: 5,
+            k: 2,
+            states: vec![0, 0, 0, 0, 0],
+            observations: vec![0.0; 5],
+            params,
+        };
+        assert!(result.changepoints().is_empty());
+    }
+
+    /// Alternating regime path → changepoints at every step (1-based t=2..=T).
+    #[test]
+    fn changepoints_every_step() {
+        let params = switching_2state();
+        let states = vec![0, 1, 0, 1, 0]; // 5 steps, 4 switches at t=2,3,4,5
+        let result = SimulationResult {
+            t: 5,
+            k: 2,
+            states,
+            observations: vec![0.0; 5],
+            params,
+        };
+        assert_eq!(result.changepoints(), vec![2, 3, 4, 5]);
+    }
+
+    /// Known manual path: switch only at t=4 (0-based index 3).
+    #[test]
+    fn changepoints_single_known_switch() {
+        let params = persistent_2state();
+        let states = vec![0, 0, 0, 1, 1]; // switch at index 3 → t=4 (1-based)
+        let result = SimulationResult {
+            t: 5,
+            k: 2,
+            states,
+            observations: vec![0.0; 5],
+            params,
+        };
+        assert_eq!(result.changepoints(), vec![4]);
+    }
+
+    /// Indices are 1-based: the first possible changepoint is at t=2.
+    #[test]
+    fn changepoints_are_1based() {
+        let params = switching_2state();
+        let states = vec![0, 1]; // switch immediately at t=2
+        let result = SimulationResult {
+            t: 2,
+            k: 2,
+            states,
+            observations: vec![0.0; 2],
+            params,
+        };
+        let cps = result.changepoints();
+        assert_eq!(cps, vec![2]);
+        // 1-based minimum is 2, never 1.
+        assert!(cps.iter().all(|&t| t >= 2));
+    }
+
+    /// Simulated frequent-switching path: count of detected changepoints
+    /// falls within a statistically plausible range.
+    #[test]
+    fn changepoints_simulated_frequency() {
+        let params = switching_2state();
+        let mut rng = SmallRng::seed_from_u64(SEED);
+        let sim = simulate(params, 1_000, &mut rng).unwrap();
+        let cps = sim.changepoints();
+        // With p=0.5 each step, expect ~500 switches; allow ±20% tolerance.
+        assert!(
+            cps.len() > 400 && cps.len() < 600,
+            "expected ~500 changepoints, got {}",
+            cps.len()
+        );
     }
 }

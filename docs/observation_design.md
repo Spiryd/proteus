@@ -136,6 +136,13 @@ the window), not $w-1$.  The choice is appropriate because the window is
 treated as a fixed-width volatility proxy, not as an unbiased sample-variance
 estimator of an infinite population.
 
+> **Thesis requirement:** This choice must be stated explicitly in the thesis.
+> Any alternative (e.g., $w-1$ Bessel correction) would produce slightly
+> different volatility values.  All registered experiments, calibration
+> statistics, and real-data evaluations use the $1/w$ population formula.
+> The difference is negligible for large windows ($w \geq 20$) but should
+> be documented for reproducibility.
+
 **Causality:** The window $\{r_{t-w+1}, \dots, r_t\}$ uses only past and
 present returns.  ✓
 

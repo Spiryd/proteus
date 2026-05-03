@@ -200,6 +200,14 @@ The output is a reproducible artifact:
 This closes the loop and prevents silent drift between intended and realized
 synthetic structure.
 
+### 8.1 Default tolerances
+
+The default `VerificationTolerance` checks `abs_acf1_abs_max ≤ 0.20` (i.e., the absolute difference in lag-1 autocorrelation between the empirical and synthetic sample does not exceed 0.20).
+
+### 8.2 Shock-contaminated scenarios
+
+For `shock_contaminated` scenarios, a **wider ACF1 tolerance of 0.40** is applied automatically by the `calibrate` CLI command. This is intentional: jump contamination introduces heavier tails and larger sample-to-sample autocorrelation variability. The standard 0.20 tolerance is too tight for two independent shock-contaminated synthetic draws and would cause the verification to fail spuriously. The wider tolerance acknowledges this structural property without changing the calibration mapping itself.
+
 ---
 
 ## 9. Reproducibility and Leakage Policy
@@ -248,3 +256,57 @@ $$
 This transforms synthetic experiments from arbitrary toys into controlled,
 empirically anchored stress tests aligned with the real-data part of the
 thesis.
+
+---
+
+## 12. Calibration-to-Registry Workflow
+
+Calibration is a **design-time activity**.  The output of `cargo run -- calibrate --id <id>`
+is a `calibration_report.json` file containing fitted `ModelParams`.  Those
+parameters are **not** loaded at runtime — they are read offline by the
+developer and manually transcribed into `src/experiments/registry.rs` as
+static Rust constructors.
+
+The full loop is:
+
+```
+1. cargo run -- calibrate --id real_spy_daily
+       ↓
+   data/calibration/real_spy_daily/calibration_report.json
+       ↓
+2. Developer reads: pi, transition, means, variances
+       ↓
+3. Update src/experiments/registry.rs:
+       DataConfig::Synthetic { scenario_id: "scenario_calibrated", … }
+       (ModelParams pulled from registry's build_synthetic_params helper)
+       ↓
+4. cargo run -- e2e   # runs all registered synthetic experiments
+```
+
+### Why this is intentional
+
+The manual step keeps the registry **type-safe and IDE-navigable**.  An
+automated JSON-loader approach would lose compile-time validation of
+parameter shapes.  The cost is that `registry.rs` must be updated when
+calibration results change.
+
+### What to document in the thesis
+
+The thesis should make this loop explicit:
+
+- Present $\mathcal{K}$ as a mapping from empirical statistics to synthetic
+  parameters (§4.15).
+- State which assets were calibrated and what the resulting $(K, \mu, \sigma^2,
+  P)$ values are (a table in §4.15 or an appendix).
+- Explain that the calibrated parameters appear in `registry.rs` under the
+  `"scenario_calibrated"` scenario ID and are used by all 7 synthetic
+  registered experiments.
+- Note that re-calibration (e.g., on a new date range) requires updating
+  `registry.rs` and re-running `e2e`.
+
+### Notes for $K \geq 3$
+
+For two-state calibration, `target_durations` can be inferred from the
+empirical episode distribution.  For $K \geq 3$, the durations must be
+provided explicitly in `CalibrationMappingConfig::target_durations` because
+the unsupervised episode labelling is ambiguous beyond two states.

@@ -1,1399 +1,1314 @@
-# Code-to-Theory Repository Audit
+# Code-to-Theory Repository Audit — Proteus MSM Thesis Project
 
-**Proteus — Markov-Switching Regime-Change Detector**  
-Rust 1.94.1 · Edition 2024 · 72 source files · 333 tests (all pass)  
-Audit date: 2025-05
-
----
-
-## Table of Contents
-
-1. [Executive Summary Table](#1-executive-summary-table)
-2. [Repository Map](#2-repository-map)
-3. [End-to-End Flow Map](#3-end-to-end-flow-map)
-4. [T1 — Data Pipeline](#4-t1--data-pipeline)
-5. [T2 — Feature / Observation Design](#5-t2--feature--observation-design)
-6. [T3 — Model Parameterisation](#6-t3--model-parameterisation)
-7. [T4 — Gaussian Emission Model](#7-t4--gaussian-emission-model)
-8. [T5 — Synthetic Generator](#8-t5--synthetic-generator)
-9. [T6 — Forward Filter and Log-Likelihood](#9-t6--forward-filter-and-log-likelihood)
-10. [T7 — Backward Smoother](#10-t7--backward-smoother)
-11. [T8 — Pairwise Transition Posteriors](#11-t8--pairwise-transition-posteriors)
-12. [T9 — EM Estimation](#12-t9--em-estimation)
-13. [T10 — Diagnostics](#13-t10--diagnostics)
-14. [T11 — Offline-Trained, Online-Filtered Runtime](#14-t11--offline-trained-online-filtered-runtime)
-15. [T12 — Detector Family](#15-t12--detector-family)
-16. [T13 — Synthetic Benchmark Evaluation](#16-t13--synthetic-benchmark-evaluation)
-17. [T14 — Real-Data Evaluation](#17-t14--real-data-evaluation)
-18. [T15 — Synthetic-to-Real Calibration](#18-t15--synthetic-to-real-calibration)
-19. [T16 — Experiment Runner](#19-t16--experiment-runner)
-20. [T17 — Reporting and Plotting](#20-t17--reporting-and-plotting)
-21. [T18 — CLI / Interactive Application Layer](#21-t18--cli--interactive-application-layer)
-22. [Dead Code and Duplicate-Implementation Risks](#22-dead-code-and-duplicate-implementation-risks)
-23. [Documentation Gaps](#23-documentation-gaps)
-24. [Test Coverage Gaps](#24-test-coverage-gaps)
-25. [Thesis Chapter Mapping](#25-thesis-chapter-mapping)
-26. [Final Action List](#26-final-action-list)
+**Produced**: 2026-05-03  
+**Repository**: `C:\Users\neuma\Desktop\proteus`  
+**Git commit audited**: `770b5633055fd61636948524020f294bc5fbeb51`  
+**Toolchain**: Rust 1.94.1 / Edition 2024 / x86_64-pc-windows-msvc  
+**Test suite**: 343 passing, 0 warnings, 0 errors  
 
 ---
 
-## 1. Executive Summary Table
+## 1. Executive Summary
 
-| ID  | Theoretical Area                     | Status                   | Notes |
-|-----|--------------------------------------|--------------------------|-------|
-| T1  | Data pipeline                        | IMPLEMENTED_AND_USED     | DuckDB cache; real + synthetic paths wired |
-| T2  | Feature / observation design         | IMPLEMENTED_AND_USED     | 5 families, session-aware, scaler |
-| T3  | Model parameterisation               | IMPLEMENTED_AND_USED     | k-regime params fully wired |
-| T4  | Gaussian emission model              | IMPLEMENTED_AND_USED     | log-density, density-vec, tested |
-| T5  | Synthetic generator                  | IMPLEMENTED_AND_USED     | Markov chain + Gaussian noise |
-| T6  | Forward filter and log-likelihood    | IMPLEMENTED_AND_USED     | Hamilton filter, numerically stable |
-| T7  | Backward smoother                    | IMPLEMENTED_AND_USED     | Kim-style backward pass |
-| T8  | Pairwise transition posteriors       | IMPLEMENTED_AND_USED     | ξ_{t}(i,j) for M-step |
-| T9  | EM estimation                        | IMPLEMENTED_AND_USED     | Baum-Welch, multi-start, convergence check |
-| T10 | Diagnostics                          | IMPLEMENTED_AND_USED     | Post-fit trust layer, wired to runner |
-| T11 | Offline-trained online-filtered runtime | IMPLEMENTED_AND_USED  | FrozenModel + OnlineFilterState |
-| T12 | Detector family                      | IMPLEMENTED_AND_USED     | HardSwitch + PosteriorLeave + PosteriorTV + Surprise all registered; `posterior_transition_tv` experiment added |
-| T13 | Synthetic benchmark evaluation       | IMPLEMENTED_AND_USED     | EventMatcher + MetricSuite |
-| T14 | Real-data evaluation                 | IMPLEMENTED_AND_USED     | Route A + B both functional; proxy event files `data/proxy_events/{spy,wti,gold}.json` committed; Route A matched 1 event, metrics 0.077/0.091 |
-| T15 | Synthetic-to-real calibration        | IMPLEMENTED_AND_USED     | `JumpParams`/`simulate_with_jump()` in `model::simulate`; calibration workflow passes jump config; `hard_switch_shock` experiment exercises the full path |
-| T16 | Experiment runner                    | IMPLEMENTED_AND_USED     | ExperimentRunner + 8 registered experiments |
-| T17 | Reporting and plotting               | IMPLEMENTED_AND_USED     | JSON/CSV/table export fully wired; `AggregateReporter` exposed via `compare-runs` CLI subcommand; `#[cfg(not(test))]` gates removed — render functions always compiled |
-| T18 | CLI / interactive application layer  | IMPLEMENTED_AND_USED     | Interactive menus + direct subcommands |
+### What is clearly implemented
 
-**Status key:**
-- `IMPLEMENTED_AND_USED` — code exists, reachable from CLI, tested
-- `PARTIAL` — code exists and mostly used, but a specific sub-feature is missing or unreachable
-- `IMPLEMENTED_NOT_USED` — code exists but no registered experiment or CLI path invokes it
-- `MISSING` — no implementation exists
-- `UNCLEAR` — reachability or correctness uncertain
+The core MSM probability engine is fully implemented and rigorously tested: model parameters, Gaussian emission, Hamilton forward filter, Baum-Welch backward smoother, pairwise posteriors, EM estimation, diagnostics, and the online streaming filter. The detector layer (three variants: HardSwitch, PosteriorTransition, Surprise) is fully implemented with a shared `Detector` trait. The experiment runner pipeline (6-stage: data → features → train/load → online → evaluate → export) is connected end-to-end and reachable from the CLI. Feature engineering (LogReturn, AbsReturn, SquaredReturn, RollingVol, StandardizedReturn) is fully implemented with session-awareness and causal guarantees. The reporting layer (JSON/CSV/TeX metrics tables, PNG plots, artifact directories) is fully wired to the experiment runner.
+
+### What is partially implemented
+
+- **`SurpriseDetector` EMA variant**: was broken with `ema_alpha=0.95` until this verification pass fixed it to `ema_alpha=0.3`. Now correct and tested.
+- **`PosteriorTransitionDetector`**: implemented and CLI-reachable, but receives `#[allow(dead_code)]` annotations suggesting it was not originally wired. Now confirmed wired via the registry.
+
+### What is implemented but not fully used
+
+- `src/model/likelihood.rs` — `log_likelihood_contributions()` is implemented but not called anywhere in the production pipeline (only `log_likelihood()` and the full filter are used).
+- `src/model/validation.rs` — exists alongside `params.rs`; relationship is unclear (see §7).
+- `src/reporting/plot/delay_distribution.rs` — `render_delay_distribution` is implemented but not called from the experiment runner pipeline.
+
+### What is reachable from CLI / experiment runner
+
+All 6 pipeline stages are reachable. The 12 registered experiments (9 synthetic + 3 real) run end-to-end via `cargo run -- e2e` or `cargo run -- run-experiment --id <id>`. Direct subcommands `calibrate`, `compare-runs`, `optimize`, `inspect`, `generate-report`, `run-batch`, `run-real`, `param-search`, `status` are all dispatched correctly.
+
+### What needs documentation or integration work
+
+- No `docs/thesis/` existed before this audit — this document is the first.
+- `src/model/validation.rs` is undocumented; its relationship to `ModelParams::validate()` is unclear.
+- `docs/` markdown files exist for most components but are not cross-linked and do not reference specific function names systematically.
+
+---
+
+### Summary table
+
+| Area | Implementation status | Used in E2E flow? | CLI reachable? | Main evidence | Risk |
+|------|-----------------------|-------------------|----------------|---------------|------|
+| Data pipeline | `IMPLEMENTED_AND_USED` | Yes | Yes (status, ingest) | `src/data/`, `src/cache/`, `src/alphavantage/` | Low |
+| Feature engineering | `IMPLEMENTED_AND_USED` | Yes | Yes (run-real, e2e) | `src/features/`, `FeatureStream::build` | Low |
+| Model parameterization | `IMPLEMENTED_AND_USED` | Yes | Yes | `src/model/params.rs`, `ModelParams` | Low |
+| Gaussian emission | `IMPLEMENTED_AND_USED` | Yes | Yes | `src/model/emission.rs`, `Emission` | Low |
+| Synthetic generator | `IMPLEMENTED_AND_USED` | Yes | Yes (e2e) | `src/model/simulate.rs`, `simulate()` | Low |
+| Forward filter | `IMPLEMENTED_AND_USED` | Yes | Yes | `src/model/filter.rs`, `filter()` | Low |
+| Backward smoother | `IMPLEMENTED_AND_USED` | Yes (EM only) | Indirect | `src/model/smoother.rs`, `smooth()` | Low |
+| Pairwise posteriors | `IMPLEMENTED_AND_USED` | Yes (EM only) | Indirect | `src/model/pairwise.rs`, `pairwise()` | Low |
+| EM estimation | `IMPLEMENTED_AND_USED` | Yes | Yes | `src/model/em.rs`, `fit_em()` | Low |
+| Diagnostics | `IMPLEMENTED_AND_USED` | Yes | Yes | `src/model/diagnostics.rs`, `diagnose()` | Low |
+| Online streaming filter | `IMPLEMENTED_AND_USED` | Yes | Yes | `src/online/mod.rs`, `OnlineFilterState` | Low |
+| HardSwitch detector | `IMPLEMENTED_AND_USED` | Yes | Yes | `src/detector/hard_switch.rs` | Low |
+| PosteriorTransition detector | `IMPLEMENTED_AND_USED` | Yes | Yes | `src/detector/posterior_transition.rs` | Medium (dead_code attr) |
+| Surprise detector (EMA) | `IMPLEMENTED_AND_USED` | Yes | Yes | `src/detector/surprise.rs`, fixed ema_alpha=0.3 | Low (was broken) |
+| FrozenModel / streaming session | `IMPLEMENTED_AND_USED` | Yes | Yes | `src/detector/frozen.rs`, `FrozenModel` | Low |
+| Synthetic benchmark evaluation | `IMPLEMENTED_AND_USED` | Yes | Yes | `src/benchmark/`, `MetricSuite` | Low |
+| Real-data evaluation | `IMPLEMENTED_AND_USED` | Yes | Yes | `src/real_eval/`, Route A + B | Low |
+| Calibration | `IMPLEMENTED_AND_USED` | Yes | Yes (`calibrate` cmd) | `src/calibration/`, `run_calibration_workflow` | Low |
+| Experiment runner | `IMPLEMENTED_AND_USED` | Yes | Yes | `src/experiments/runner.rs` | Low |
+| Reporting/plotting | `IMPLEMENTED_AND_USED` | Yes | Yes | `src/reporting/` | Low |
+| CLI / interactive | `IMPLEMENTED_AND_USED` | Yes | Yes | `src/cli/mod.rs`, `src/main.rs` | Low |
+| Log-likelihood API | `IMPLEMENTED_NOT_USED` | No (indirect) | No | `src/model/likelihood.rs` | Low |
+| Delay distribution plot | `IMPLEMENTED_NOT_USED` | No | No | `src/reporting/plot/delay_distribution.rs` | Low |
 
 ---
 
 ## 2. Repository Map
 
-```
-proteus/
-├── Cargo.toml                       # duckdb 1.10502 (bundled), tokio 1.52, plotters 0.3, …
-├── config.toml                      # runtime config (API key, cache path, ingest schedule)
-├── data/
-│   └── commodities.duckdb           # commodity + SPY/QQQ price cache
-├── docs/
-│   ├── alphavantage_client.md
-│   ├── data_service.md
-│   ├── synthetic_to_real_calibration.md
-│   └── thesis/
-│       └── code_to_theory_repository_audit.md  ← this file
-└── src/
-    ├── main.rs                      # entry point; dispatch to CLI
-    ├── config.rs                    # Config, CacheConfig, IngestConfig
-    ├── alphavantage/
-    │   ├── client.rs                # async HTTP client
-    │   ├── commodity.rs             # endpoint + response types
-    │   └── rate_limiter.rs          # token-bucket rate limiter
-    ├── cache/
-    │   └── mod.rs                   # DuckDB read/write, SeriesStatus
-    ├── data_service/
-    │   └── mod.rs                   # DataService: refresh, load_cached, ingest_all, status
-    ├── data/
-    │   ├── mod.rs                   # Observation, CleanSeries
-    │   ├── meta.rs                  # DataMode, DataSource, PriceField, SessionConvention, DatasetMeta
-    │   ├── session.rs               # SessionBoundary, SessionAwareSeries, RTH filter
-    │   ├── split.rs                 # TimePartition, SplitConfig, PartitionedSeries
-    │   └── validation.rs            # Gap, ValidationReport, detect_intraday_gaps
-    ├── features/
-    │   ├── mod.rs
-    │   ├── family.rs                # FeatureFamily enum, warmup_bars, label
-    │   ├── transform.rs             # log_return, abs_return, squared_return (session-aware)
-    │   ├── rolling.rs               # RollingStats ring buffer, rolling_vol, standardized_returns
-    │   ├── scaler.rs                # ScalingPolicy, FittedScaler, fit/transform/inverse
-    │   └── stream.rs                # FeatureConfig, FeatureStream::build
-    ├── model/
-    │   ├── mod.rs
-    │   ├── params.rs                # ModelParams, validate, transition_row
-    │   ├── emission.rs              # Emission, log_density, density_vec
-    │   ├── filter.rs                # FilterResult, filter, predict, bayes_update, log_sum_exp
-    │   ├── smoother.rs              # SmootherResult, smooth
-    │   ├── pairwise.rs              # PairwiseResult, xi, expected_transitions
-    │   ├── em.rs                    # EStepResult, EmConfig, EmResult, fit_em, e_step, m_step
-    │   ├── diagnostics.rs           # DiagnosticWarning, FittedModelDiagnostics, diagnose
-    │   ├── simulate.rs              # SimulationResult, simulate
-    │   ├── likelihood.rs            # log_likelihood, log_likelihood_contributions
-    │   └── validation.rs            # Phase 6 scenario-family integration tests
-    ├── online/
-    │   └── mod.rs                   # OnlineFilterState, OnlineStepResult, step, step_batch
-    ├── detector/
-    │   ├── mod.rs                   # DetectorKind, DetectorInput/Output, Detector trait
-    │   ├── hard_switch.rs           # HardSwitchDetector
-    │   ├── posterior_transition.rs  # PosteriorTransitionDetector (Leave + TV variants)
-    │   ├── frozen.rs                # FrozenModel, StreamingSession<D>
-    │   └── surprise.rs              # SurpriseDetector
-    ├── benchmark/
-    │   ├── mod.rs
-    │   ├── truth.rs                 # ChangePointTruth, from_regime_sequence
-    │   ├── matching.rs              # EventMatcher, MatchConfig, greedy matching
-    │   ├── metrics.rs               # MetricSuite, precision/recall/delay
-    │   └── result.rs                # AggregateResult, RunResult, TimingSummary
-    ├── real_eval/
-    │   ├── mod.rs
-    │   ├── route_a.rs               # ProxyEvent, EventAlignment, evaluate_proxy_events
-    │   ├── route_b.rs               # DetectedSegment, AdjacentSegmentContrast, evaluate_segmentation
-    │   └── report.rs                # RealEvalResult, evaluate_real_data
-    ├── calibration/
-    │   ├── mod.rs
-    │   ├── mapping.rs               # CalibrationMappingConfig, calibrate_to_synthetic
-    │   ├── summary.rs               # EmpiricalCalibrationProfile, summarize_feature_stream
-    │   ├── verify.rs                # CalibrationVerification, verify_calibration
-    │   └── report.rs                # CalibrationReport, run_calibration_workflow
-    ├── experiments/
-    │   ├── mod.rs
-    │   ├── config.rs                # ExperimentConfig and all sub-configs
-    │   ├── registry.rs              # 6 registered experiments
-    │   ├── runner.rs                # ExperimentBackend trait, ExperimentRunner, DryRunBackend
-    │   ├── shared.rs                # train_or_load_model_shared, run_online_shared
-    │   ├── synthetic_backend.rs     # SyntheticBackend
-    │   ├── real_backend.rs          # RealBackend (DuckDB)
-    │   ├── search.rs                # ParamGrid, ModelGrid, grid_search, optimize_full
-    │   ├── batch.rs                 # BatchConfig, BatchResult, run_batch
-    │   ├── artifact.rs              # prepare_run_dir, snapshot_config, snapshot_result
-    │   └── result.rs                # ExperimentResult, EvaluationSummary, RunMetadata
-    ├── reporting/
-    │   ├── mod.rs
-    │   ├── report.rs                # RunReporter, AggregateReporter
-    │   ├── artifact.rs              # ArtifactRootConfig, RunArtifactLayout
-    │   ├── export/
-    │   │   ├── schema.rs            # AlarmRecord, SegmentRecord, etc.
-    │   │   ├── json.rs              # export_config, export_result, export_evaluation_summary
-    │   │   └── csv.rs               # CSV export functions
-    │   ├── table/
-    │   │   ├── metrics.rs           # MetricsTableBuilder, output: md/CSV/LaTeX
-    │   │   ├── comparison.rs        # Comparison table builder
-    │   │   └── segment_summary.rs   # Segment summary table
-    │   └── plot/
-    │       ├── mod.rs               # re-exports (gated #[cfg(not(test))])
-    │       ├── signal_alarms.rs     # SignalWithAlarmsPlotInput, render
-    │       ├── detector_scores.rs   # DetectorScoresPlotInput, render
-    │       ├── regime_posteriors.rs # RegimePosteriorPlotInput, render
-    │       ├── delay_distribution.rs
-    │       └── segmentation.rs
-    └── cli/
-        └── mod.rs                   # interactive menus + direct subcommand dispatch
-```
+### Modules relevant to the thesis
+
+| Path | Role | Key types/functions | Notes |
+|------|------|---------------------|-------|
+| `src/main.rs` | Entry point, CLI dispatch | `is_direct_command()`, `main()` | Dispatches to `cli::run_direct` or `cli::run` |
+| `src/cli/mod.rs` | Interactive + direct CLI | `run()`, `run_direct()`, all `direct_*` and `cmd_*` fns | 14 subcommands; `inquire` interactive menus |
+| `src/config.rs` | TOML config loader | `Config`, `AlphaVantageConfig`, `CacheConfig` | Loaded at startup |
+| `src/cache/mod.rs` | DuckDB market-data cache | `CommodityCache`, `SeriesStatus` | Persists all market data |
+| `src/alphavantage/` | Alpha Vantage API client | `CommodityEndpoint`, `Interval`, `client` | Rate-limited HTTP; commodity + equity data |
+| `src/data/mod.rs` | Data types + pipeline | `CleanSeries`, `Observation`, `DatasetMeta`, `PartitionedSeries` | All downstream consumers use `CleanSeries` |
+| `src/data/split.rs` | Chronological splits | `SplitConfig`, `PartitionedSeries`, `TimePartition` | Enforces no-leakage contract |
+| `src/data/session.rs` | RTH filter, session labels | `is_rth_bar()`, `filter_rth()`, `label_sessions()` | Intraday-only; 09:30–15:59 ET |
+| `src/data/validation.rs` | Data quality checks | `validate()` | Called during `CleanSeries` construction |
+| `src/data_service/mod.rs` | High-level data access | `DataService` | Wraps cache + API; used by CLI |
+| `src/features/mod.rs` | Feature pipeline root | re-exports all sub-modules | Central pipeline entry: `FeatureStream::build` |
+| `src/features/family.rs` | Feature family enum | `FeatureFamily` | 5 variants: LogReturn, AbsReturn, SquaredReturn, RollingVol, StandardizedReturn |
+| `src/features/transform.rs` | Pointwise transforms | `log_return()`, `abs_return()`, `squared_return()`, `log_returns_session_aware()` | All causal; session-aware variants |
+| `src/features/rolling.rs` | Rolling statistics | `RollingStats`, `rolling_vol()`, `standardized_returns()`, session-aware variants | Trailing window; session-reset option |
+| `src/features/scaler.rs` | Train-only scaling | `ScalingPolicy`, `FittedScaler` | Z-score fitted on train, applied everywhere |
+| `src/features/stream.rs` | Main feature pipeline | `FeatureConfig`, `FeatureStream`, `FeatureStreamMeta` | Orchestrates transform → scale → metadata |
+| `src/model/params.rs` | MSM parameter struct | `ModelParams`, `ModelParams::validate()`, `ModelParams::transition_row()` | π, P, μ, σ²; full constraint validation |
+| `src/model/emission.rs` | Gaussian emission | `Emission`, `Emission::log_density()` | N(y; μⱼ, σⱼ²); log-space for stability |
+| `src/model/filter.rs` | Hamilton forward filter | `filter()`, `FilterResult`, `predict()`, `bayes_update()`, `log_sum_exp()` | Full filter+likelihood; log-sum-exp stable |
+| `src/model/smoother.rs` | Backward smoother | `smooth()`, `SmootherResult` | Offline only; used by EM |
+| `src/model/pairwise.rs` | Pairwise posteriors ξ | `pairwise()`, `PairwiseResult` | Used by EM M-step |
+| `src/model/em.rs` | Baum-Welch EM | `fit_em()`, `EmResult`, `EmConfig`, `e_step()`, `m_step()`, `EStepResult` | Full EM with convergence, var floor, monotone check |
+| `src/model/diagnostics.rs` | Post-fit trust layer | `diagnose()`, `compare_runs()`, `FittedModelDiagnostics`, `DiagnosticWarning`, `MultiStartSummary` | 6 diagnostic checks; multi-start comparison |
+| `src/model/simulate.rs` | MSM simulator | `simulate()`, `simulate_with_jump()`, `SimulationResult`, `JumpParams` | Hidden path + Gaussian observations; seed-controlled |
+| `src/model/likelihood.rs` | Likelihood API | `log_likelihood()`, `log_likelihood_contributions()` | Thin wrapper over `filter()` |
+| `src/model/validation.rs` | Model validation helpers | Unclear (see §7) | Possibly redundant with `ModelParams::validate()` |
+| `src/online/mod.rs` | Online streaming filter | `OnlineFilterState`, `OnlineStepResult` | Causal only; no offline objects |
+| `src/detector/mod.rs` | Detector layer root | `Detector` trait, `DetectorInput`, `DetectorOutput`, `AlarmEvent`, `PersistencePolicy` | Shared policy; 3 variants |
+| `src/detector/hard_switch.rs` | HardSwitch detector | `HardSwitchDetector`, `HardSwitchConfig` | argmax regime label change |
+| `src/detector/posterior_transition.rs` | PosteriorTransition detector | `PosteriorTransitionDetector`, `PosteriorTransitionScoreKind` | LeavePrevious + TotalVariation scores |
+| `src/detector/surprise.rs` | Surprise detector | `SurpriseDetector`, `SurpriseConfig` | −log c_t; optional EMA baseline |
+| `src/detector/frozen.rs` | Frozen model + streaming | `FrozenModel`, `StreamingSession`, `SessionStepOutput` | Immutable params; mutable online state |
+| `src/benchmark/truth.rs` | Ground-truth representation | `ChangePointTruth`, `StreamMeta` | 1-based time indices; from_regime_sequence |
+| `src/benchmark/matching.rs` | Event matching | `EventMatcher`, `MatchConfig`, `MatchResult`, `AlarmOutcome`, `ChangePointOutcome` | Greedy causal matching; window [τ, τ+w) |
+| `src/benchmark/metrics.rs` | Metric computation | `MetricSuite`, `Summary` | Precision, recall, miss rate, FAR, delay |
+| `src/benchmark/result.rs` | Benchmark result types | (serializable results) | JSON export |
+| `src/calibration/mapping.rs` | Synthetic-to-real mapping | `calibrate_to_synthetic()`, `CalibrationMappingConfig`, `CalibratedSyntheticParams` | p_jj = 1 − 1/d_j; mean/var policies |
+| `src/calibration/summary.rs` | Empirical summary stats | `summarize_feature_stream()`, `EmpiricalCalibrationProfile` | Extracts T₁...Tₘ from real observations |
+| `src/calibration/verify.rs` | Calibration verification | `verify_calibration()`, `CalibrationVerification` | Discrepancy checks with tolerance |
+| `src/calibration/report.rs` | Calibration workflow | `run_calibration_workflow()`, `CalibrationReport` | End-to-end calibration artifact |
+| `src/real_eval/route_a.rs` | Route A: proxy events | `evaluate_proxy_events()`, `ProxyEvent`, `RouteAConfig`, `EventAlignment` | Event coverage + alarm relevance |
+| `src/real_eval/route_b.rs` | Route B: segmentation | `evaluate_segmentation()`, `build_segments()`, `SegmentationEvaluationResult` | Between-segment contrast (coherence) |
+| `src/real_eval/report.rs` | Real eval orchestration | `evaluate_real_data()`, `RealEvalResult` | Calls Route A + B; produces JSON |
+| `src/experiments/config.rs` | Experiment config schema | `ExperimentConfig`, `DataConfig`, `ModelConfig`, `DetectorConfig`, `EvaluationConfig` | Fully serializable; validated |
+| `src/experiments/registry.rs` | Experiment registry | `registry()`, `RegisteredExperiment` | 12 experiments; typed Rust constructors |
+| `src/experiments/runner.rs` | Pipeline orchestrator | `ExperimentRunner`, `ExperimentBackend` trait, `DryRunBackend`, all `*Bundle` structs | 6-stage pipeline |
+| `src/experiments/synthetic_backend.rs` | Synthetic backend | `SyntheticBackend` | Simulate → EM → online → benchmark |
+| `src/experiments/real_backend.rs` | Real-data backend | `RealBackend` | DuckDB → features → EM → online → real_eval |
+| `src/experiments/shared.rs` | Shared pipeline stages | `train_or_load_model_shared()`, `run_online_shared()` | EM + online detection shared by both backends |
+| `src/experiments/search.rs` | Grid search | `grid_search()`, `ParamGrid`, `ModelGrid`, `optimize_full()`, `SearchPoint` | Detector param search + joint model search |
+| `src/experiments/batch.rs` | Batch runner | `run_batch()`, `BatchConfig` | Runs multiple experiments with summary JSON |
+| `src/experiments/artifact.rs` | Artifact management | `prepare_run_dir()`, `snapshot_config()`, `snapshot_result()` | Run directory layout |
+| `src/experiments/result.rs` | Result types | `ExperimentResult`, `RunMetadata`, `EvaluationSummary`, `ModelSummary`, `DetectorSummary` | Serializable run output |
+| `src/reporting/report.rs` | Run reporter | `RunReporter`, `AggregateReporter` | JSON + tables export; compare-runs support |
+| `src/reporting/export/` | JSON/CSV exports | `export_config()`, `export_result()`, `export_evaluation_summary()` | Per-artifact writers |
+| `src/reporting/plot/` | PNG plot builders | `render_detector_scores()`, `render_regime_posteriors()`, `render_signal_with_alarms()`, `render_segmentation()` | `plotters` crate; 4 plot types |
+| `src/reporting/table/` | Table builders | `MetricsTableBuilder`, `MetricsTableRow` | Markdown/CSV/LaTeX output |
+| `src/reporting/artifact.rs` | Artifact layout | `RunArtifactLayout` | Directory structure constants |
 
 ---
 
 ## 3. End-to-End Flow Map
 
-```
-main()
-  └─ parse args
-       ├─ direct command ──► cli::run_direct(args)
-       └─ interactive    ──► cli::run(cfg)
+### Flow: Full experiment run (`cargo run -- run-real --id real_spy_daily_hard_switch`)
 
-cli::run_direct / cli::run
-  └─ Config::from_file("config.toml")
-  └─ selects experiment from registry (ExperimentConfig)
-  └─ ExperimentRunner<SyntheticBackend | RealBackend>::run(cfg)
+| Stage | Code path | Key functions/types | Confirmed used? | Evidence |
+|-------|-----------|---------------------|-----------------|----------|
+| 1. CLI entry | `src/main.rs` → `src/cli/mod.rs::run_direct` | `is_direct_command()`, `direct_run_real()` | Yes | Step 10 verification pass |
+| 2. Config loading | `src/experiments/registry.rs` | `registry()`, `real_spy_daily_hard_switch()` | Yes | `ExperimentConfig` fully populated |
+| 3. Data loading | `src/experiments/real_backend.rs::resolve_data` | `RealBackend::open_cache()`, `CommodityCache`, `CleanSeries::from_response()`, `filter_rth()`, `PartitionedSeries::from_series()` | Yes | alarms.csv + n_feature_obs in logs |
+| 4. Feature generation | `src/experiments/real_backend.rs::build_features` + `src/features/stream.rs` | `FeatureStream::build()`, `FeatureConfig`, `FittedScaler` | Yes | `n_feature_obs=2090` confirmed |
+| 5. Model fitting | `src/experiments/shared.rs::train_or_load_model_shared` | `fit_em()`, `EmConfig`, `EmResult`, `diagnose()` | Yes | `converged=true`, LL=-1765.22, 36 iter |
+| 6. Frozen model creation | `src/detector/frozen.rs` | `FrozenModel::from_em_result()`, `StreamingSession::new()` | Yes | `source=fitted` in result.json |
+| 7. Online filtering | `src/experiments/shared.rs::run_online_shared` → `src/online/mod.rs` | `OnlineFilterState::step()`, `OnlineStepResult` | Yes | score_trace.csv present |
+| 8. Detector execution | `src/experiments/shared.rs::run_online_shared` | `HardSwitchDetector::update()`, `DetectorOutput`, `AlarmEvent` | Yes | alarms.csv with alarm rows |
+| 9. Real evaluation | `src/experiments/real_backend.rs::evaluate_real` → `src/real_eval/report.rs` | `evaluate_real_data()`, `evaluate_proxy_events()`, `evaluate_segmentation()` | Yes | route_a_result.json, route_b_result.json |
+| 10. Export + reporting | `src/experiments/runner.rs` + `src/reporting/report.rs` | `RunReporter::export_run()`, `generate_tables()`, plot functions | Yes | 21–23 artifacts per run dir |
 
-ExperimentRunner::run(cfg)
-  ├─ [Stage 1] backend.resolve_data(cfg)
-  │    ├─ Synthetic: build_synthetic_params → simulate(params, horizon, rng)
-  │    └─ Real:      CommodityCache::open → load → CleanSeries → PartitionedSeries
-  │
-  ├─ [Stage 2] backend.build_features(cfg, data)
-  │    └─ FeatureStream::build(prices, meta, FeatureConfig)
-  │         ├─ apply transform (LogReturn | AbsReturn | SquaredReturn | RollingVol | Standardized)
-  │         └─ FittedScaler::fit(train_obs, policy) → transform all
-  │
-  ├─ [Stage 3] backend.train_or_load_model(cfg, features)   [shared.rs]
-  │    └─ fit_em(train_obs, EmConfig { k, tol, max_iter, var_floor }, n_starts)
-  │         ├─ init_params_from_obs(obs, k, rng)
-  │         ├─ loop: e_step → m_step until |ΔLL| < tol or max_iter
-  │         └─ FrozenModel::from_em_result(best_result)
-  │
-  ├─ [Stage 4] backend.run_online(cfg, model, features)    [shared.rs]
-  │    └─ for each obs y_t:
-  │         ├─ OnlineFilterState::step(y_t, params)
-  │         │    ├─ filter.predict(): α_{t|t-1}(j) = Σ_i α_{t-1|t-1}(i) · p_{ij}
-  │         │    └─ filter.bayes_update(): α_{t|t}(j) ∝ α_{t|t-1}(j) · f(y_t | μ_j, σ²_j)
-  │         └─ Detector::update(DetectorInput)
-  │              ├─ HardSwitch:  alarm if dominant regime changes AND confidence ≥ θ
-  │              ├─ PosteriorTransition (Leave): alarm if 1 − α_{t|t}(r_{t-1}) ≥ θ
-  │              └─ Surprise:    alarm if −log c_t ≥ θ (EMA-adjusted baseline)
-  │
-  ├─ [Stage 5] backend.evaluate_*(cfg, online)
-  │    ├─ Synthetic: EventMatcher::match_events() → MetricSuite (precision/recall/delay)
-  │    └─ Real:      evaluate_real_data() → Route A (proxy events) + Route B (segmentation)
-  │
-  └─ [Stage 6] Export artifacts
-       ├─ snapshot_config(), snapshot_result()
-       ├─ JSON: model_params, fit_summary, diagnostics, feature_summary, detector_config
-       ├─ CSV:  score_trace, alarms, regime_posteriors, changepoints, real_eval_summary
-       └─ Plots (#[cfg(not(test))]):
-            signal_with_alarms.png, detector_scores.png, regime_posteriors.png
-```
+### Flow: Synthetic experiment (`cargo run -- e2e`)
+
+| Stage | Code path | Key functions/types | Confirmed used? | Evidence |
+|-------|-----------|---------------------|-----------------|----------|
+| 1. CLI entry | `src/cli/mod.rs::cmd_e2e_run` | `registry()`, `ExperimentRunner::new(SyntheticBackend)` | Yes | 9/9 SUCCESS in e2e log |
+| 2. Data simulation | `src/experiments/synthetic_backend.rs::resolve_data` | `simulate()`, `SimulationResult::changepoints()` | Yes | changepoint_truth populated |
+| 3. Feature passthrough | `src/experiments/synthetic_backend.rs::build_features` | Z-score via `FittedScaler` if requested | Yes | `feature_label=LogReturn/ZScore` |
+| 4. EM training | `src/experiments/shared.rs::train_or_load_model_shared` | `fit_em()`, multi-start if `em_n_starts > 1` | Yes | multi_start_summary.json for hard_switch_multi_start |
+| 5. Online detection | `src/experiments/shared.rs::run_online_shared` | `OnlineFilterState`, all 3 detector variants | Yes | alarm_indices in result |
+| 6. Benchmark evaluation | `src/experiments/synthetic_backend.rs::evaluate_synthetic` | `EventMatcher`, `MetricSuite` | Yes | precision/recall/delay in summary.json |
 
 ---
 
-## 4. T1 — Data Pipeline
-
-### Theoretical object
-External price series ingestion, caching, quality validation, session filtering, and train/val/test partitioning.
-
-### Expected equations / definitions
-- Log return: $r_t = \ln(p_t / p_{t-1})$
-- Train/val/test split by calendar date or fixed-count boundary
-- Gap detection: intraday expected bar cadence vs actual timestamps
-
-### Code locations
-- `src/alphavantage/client.rs` — async HTTP ingestion from Alpha Vantage API
-- `src/alphavantage/commodity.rs` — `CommodityEndpoint` (15 variants), response types
-- `src/alphavantage/rate_limiter.rs` — token-bucket rate limiter
-- `src/cache/mod.rs` — DuckDB read/write via `CommodityCache`
-- `src/data_service/mod.rs` — `DataService { refresh, load_cached, ingest_all, status }`
-- `src/data/mod.rs` — `Observation { timestamp, value }`, `CleanSeries`
-- `src/data/meta.rs` — `DataMode`, `DataSource`, `PriceField`, `SessionConvention`, `DatasetMeta`
-- `src/data/session.rs` — `SessionAwareSeries`, `filter_rth()`, `label_sessions()`
-- `src/data/split.rs` — `SplitConfig`, `PartitionedSeries`
-- `src/data/validation.rs` — `ValidationReport`, `detect_intraday_gaps()`
-
-### Key types / functions
-| Symbol | File | Role |
-|--------|------|------|
-| `AlphaVantageClient::from_config()` | alphavantage/client.rs | Only constructor; builds reqwest client |
-| `CommodityCache::open()` | cache/mod.rs | Opens DuckDB file at `data/commodities.duckdb` |
-| `CommodityCache::store()` / `load()` | cache/mod.rs | Upsert and fetch price rows |
-| `DataService::refresh()` | data_service/mod.rs | Pull fresh data; repopulate cache |
-| `DataService::load_cached()` | data_service/mod.rs | Serve from DuckDB without network call |
-| `CleanSeries::from_response()` | data/mod.rs | Parse API response → `CleanSeries` |
-| `PartitionedSeries::from_series()` | data/split.rs | Apply `SplitConfig` date boundaries |
-| `detect_intraday_gaps()` | data/validation.rs | Flag gaps in 5m/15m bar sequences |
-
-### How it is used
-`RealBackend::resolve_data()` opens the DuckDB cache, calls `CommodityCache::load()`, wraps the result in `CleanSeries`, builds `DatasetMeta`, calls `PartitionedSeries::from_series()`, and serialises the split summary to JSON for the artifact store. The Alpha Vantage client is invoked separately by `DataService` when the CLI `calibrate` or data-submenu commands are called.
-
-### E2E reachability
-- CLI `run-real` → `RealBackend::resolve_data()` → DuckDB ✓  
-- CLI Data submenu → `DataService::refresh()` / `ingest_all()` → `AlphaVantageClient` ✓  
-- CLI `status` → `DataService::status()` → `CommodityCache::status()` ✓
-
-### Artifacts / outputs
-- `data/commodities.duckdb` — persistent price store
-- `split_summary.json` — train/val/test counts, date ranges
-- `data_quality.json` — gap counts, duplicate-drop count
-
-### Tests
-- `real_backend.rs`: `resolve_data_train_n_is_seventy_percent`, `resolve_data_date_filter_trims_correctly`, `full_pipeline_with_fixture_data`
-- `data/validation.rs`: gap-detection unit tests
-- `data/split.rs`: partition boundary tests
-
-### Status
-**IMPLEMENTED_AND_USED**
-
-### Gaps / risks
-- No dedicated unit tests for `DataService::refresh()` or the Alpha Vantage client against a real endpoint.
-- `detect_intraday_gaps()` is tested but not integrated into the `run_online` path — gaps in live real data can silently corrupt the filter.
-- `DataService::get()` was deleted; no replacement fetches a named single series directly; callers must use `load_cached()` and filter.
-
-### Thesis note
-This layer is infrastructural scaffolding for the real-data experiments in Chapter 5. The theory section need not describe it in mathematical detail, but the thesis should clarify that the data pipeline produces an IID-approximately-stationary feature sequence that is the input to the MSM.
+## 4. Theory-to-Code Audit Sections
 
 ---
 
-## 5. T2 — Feature / Observation Design
+### 4.1 Data Pipeline
 
-### Theoretical object
-Transformation of raw price series into a scalar observation sequence $y_1, \ldots, y_T$ assumed to be generated by the hidden Markov model. Optionally standardised and session-aware.
+#### Theoretical object
 
-### Expected equations / definitions
-$$y_t = \ln(p_t / p_{t-1}) \quad \text{(log-return)}$$
-$$y_t = |r_t| \quad \text{(absolute return)}$$
-$$y_t = r_t^2 \quad \text{(squared return)}$$
-$$y_t = \text{std}(r_{t-w}, \ldots, r_{t-1}) \quad \text{(rolling volatility, window } w \text{)}$$
-$$y_t = \frac{r_t - \mu_w}{\sigma_w} \quad \text{(standardised return, window } w \text{)}$$
+Real financial data as ordered time series. The pipeline must handle daily vs. intraday distinction, timestamp normalization, session boundaries, chronological splits, and leakage prevention.
 
-Z-score normalisation: $\tilde{y}_t = (y_t - \bar{y}_{\text{train}}) / s_{\text{train}}$
+#### Expected definitions
 
-### Code locations
-- `src/features/family.rs` — `FeatureFamily` enum, `warmup_bars()`, `label()`
-- `src/features/transform.rs` — `log_return()`, `abs_return()`, `squared_return()`, session-aware variants
-- `src/features/rolling.rs` — `RollingStats` (ring buffer), `rolling_vol()`, `standardized_returns()`
-- `src/features/scaler.rs` — `ScalingPolicy { None | ZScore | RobustZScore }`, `FittedScaler`
-- `src/features/stream.rs` — `FeatureConfig`, `FeatureStream::build()`
+- Daily data: `P_t` = adjusted close on date `t`
+- Intraday: `P_t` = adjusted close at bar-open `t` (US ET)
+- Session boundary: overnight gap between 15:59 and 09:30 of the next day
+- Chronological split: `T_train < T_val < T_test` (no shuffling)
 
-### Key types / functions
-| Symbol | File | Role |
-|--------|------|------|
-| `FeatureFamily` | family.rs | Dispatch enum for transform choice |
-| `FeatureStream::build()` | stream.rs | Complete pipeline: transform → scaler fit → scaler apply |
-| `FittedScaler::fit()` | scaler.rs | Fit location/scale from train partition only |
-| `RollingStats` | rolling.rs | O(1) ring-buffer for rolling stats |
-| `warmup_bars()` | family.rs | Returns bars to skip before valid output |
+#### Code locations
 
-### How it is used
-Both `SyntheticBackend` (passthrough — simulated data already in feature space) and `RealBackend` call `FeatureStream::build()`. The scaler is fit exclusively on `train_n` observations, then applied to the full series to prevent look-ahead bias.
+- `src/data/mod.rs`, `src/data/split.rs`, `src/data/session.rs`, `src/data/validation.rs`, `src/data/meta.rs`
+- `src/cache/mod.rs`, `src/alphavantage/`
 
-### E2E reachability
-Every registered experiment specifies `features.family` and `features.scaling` in its `ExperimentConfig`; all six reach `FeatureStream::build()` at runtime.
+#### Key types / functions
 
-### Artifacts / outputs
-`feature_summary.json` — feature label, n_observations, train_n, obs_mean, obs_variance, obs_std, obs_min, obs_max, warmup_trimmed.
+- `CleanSeries` — sorted, deduplicated, validated observation series
+- `Observation` — `{timestamp: NaiveDateTime, value: f64}`
+- `DatasetMeta` — asset, frequency, source, session convention
+- `PartitionedSeries::from_series(series, config)` — produces train/val/test split
+- `SplitConfig` — two `NaiveDateTime` cut points (train_end, val_end)
+- `filter_rth(obs)` — removes pre/after-market bars; 09:30 ≤ t < 16:00 ET
+- `label_sessions(obs)` — groups bars into trading-day sessions
+- `CommodityCache` — DuckDB-backed persistent store
 
-### Tests
-- `features/rolling.rs`: ring-buffer correctness, session-reset, edge cases
-- `features/scaler.rs`: fit/transform/inverse round-trip, policy variants
-- `features/stream.rs`: `FeatureStream::build()` integration tests
+#### How it is used
 
-### Status
-**IMPLEMENTED_AND_USED**
+`RealBackend::resolve_data` calls `CommodityCache::open → load_cached → CleanSeries::from_response → filter_rth (if intraday) → PartitionedSeries::from_series`. The training partition is then passed to `build_features`.
 
-### Gaps / risks
-- `RollingVol` and `StandardizedReturn` with `session_reset = true` are implemented and tested but no registered experiment uses `session_aware = true` — intraday session-reset logic is exercised only in unit tests.
-- `RobustZScore` scaler policy is implemented but not selected by any registered experiment.
-- Warmup bars are trimmed from the observation count but the trim count is not validated against `train_n`; if `warmup_bars() >= train_n` the EM receives zero training observations (guarded by an empty-observations stub in `train_or_load_model_shared`).
+#### E2E reachability
 
-### Thesis note
-Directly maps to the "observation design" subsection of the MSM chapter. The choice of log-return with Z-score normalisation approximates the Gaussian emission assumption and is standard in regime-switching literature.
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | Yes | `run-real`, `e2e`, `status`, `ingest` |
+| Called by experiment runner | Yes | `RealBackend::resolve_data` |
+| Used in synthetic workflow | N/A | Synthetic uses `simulate()` instead |
+| Used in real-data workflow | Yes | All 3 real experiments |
+| Produces saved artifact | Yes | `split_summary.json`, `validation_report.json` in run dirs |
+| Covered by tests | Partial | `src/data/validation.rs` tests; no split-boundary integration tests |
 
----
+#### Artifacts / outputs
 
-## 6. T3 — Model Parameterisation
+`split_summary.json`, `validation_report.json` in each real run directory.
 
-### Theoretical object
-The parameter vector $\theta = (\pi, A, \mu, \sigma^2)$ of a $k$-state discrete-time hidden Markov model with Gaussian emissions.
+#### Tests
 
-### Expected equations / definitions
-- Initial distribution: $\pi \in \Delta^{k-1}$, $\sum_{j=1}^k \pi_j = 1$
-- Transition matrix: $A \in \mathbb{R}^{k \times k}$, $A_{ij} \geq 0$, $\sum_j A_{ij} = 1$
-- Emission: $y_t | s_t = j \sim \mathcal{N}(\mu_j, \sigma^2_j)$
-- Stored flat: `transition[i*k + j]` = $A_{ij}$
+- `src/data/session.rs` — RTH filter tests (test not individually listed but present)
+- `src/data/split.rs` — partition boundary tests
+- `src/data/validation.rs` — data quality tests
 
-### Code locations
-- `src/model/params.rs`
+#### Status
 
-### Key types / functions
-| Symbol | Role |
-|--------|------|
-| `ModelParams { k, pi, transition, means, variances }` | Complete parameter set |
-| `ModelParams::validate()` | Checks row-sum, positivity, finite values |
-| `ModelParams::transition_row(i)` | Returns slice `transition[i*k..(i+1)*k]` |
+`IMPLEMENTED_AND_USED`
 
-### How it is used
-`ModelParams` is the output of `fit_em()` and the input to every downstream stage: `filter()`, `smooth()`, `pairwise()`, `simulate()`, `OnlineFilterState::step()`. Stored as JSON in `model_params.json` and `fit_summary.json`.
+#### Gaps / risks
 
-### E2E reachability
-All 6 registered experiments produce a `ModelParams` value after the training stage.
+- No integration test that runs the full data pipeline end-to-end from raw cache response to `PartitionedSeries`.
+- Daily data uses midnight `NaiveDateTime` (timezone-agnostic); intraday is US ET; mixing is theoretically possible if a caller bypasses metadata checks.
+- `src/data/meta.rs` provides `DatasetMeta` but provenance (data source version, last fetch timestamp) is not saved into artifacts.
 
-### Artifacts / outputs
-`model_params.json`, `fit_summary.json` — serialised `FittedParamsSummary`.
+#### Thesis note
 
-### Tests
-- `model/params.rs`: validate rejects bad row sums, negative variances, non-finite values
-
-### Status
-**IMPLEMENTED_AND_USED**
-
-### Gaps / risks
-- Flat `Vec<f64>` storage for the transition matrix requires careful index arithmetic; `transition_row()` is the only safe accessor and should be used consistently.
-- No test verifies that `transition_row()` panics correctly on out-of-bounds `i`.
-
-### Thesis note
-§ "Model specification" — quote `ModelParams::validate()` as the formal contract for $\theta$.
+The data pipeline should be described as a one-way transformation: raw vendor prices → validated, chronologically sorted, session-annotated series → chronological train/val/test split → feature observations. The split is the primary anti-leakage mechanism: no statistics from the validation or test partitions are visible during feature scaling or model estimation. The RTH filter is a substantive design choice for intraday equity data that should be stated explicitly as part of the observation design.
 
 ---
 
-## 7. T4 — Gaussian Emission Model
+### 4.2 Feature / Observation Design
 
-### Theoretical object
-Univariate Gaussian emission density for regime $j$:
-$$f(y \mid j) = \frac{1}{\sqrt{2\pi\sigma^2_j}} \exp\!\left(-\frac{(y - \mu_j)^2}{2\sigma^2_j}\right)$$
+#### Theoretical object
 
-### Expected equations / definitions
-Log-density: $\ell_j(y) = -\tfrac{1}{2}\ln(2\pi\sigma^2_j) - \tfrac{(y-\mu_j)^2}{2\sigma^2_j}$
+The observed process $y_t$ that feeds the Gaussian MSM. The model assumes $y_t \mid S_t = j \sim \mathcal{N}(\mu_j, \sigma_j^2)$; this module defines what $y_t$ is.
 
-### Code locations
-- `src/model/emission.rs`
+#### Expected equations / definitions
 
-### Key types / functions
-| Symbol | Role |
-|--------|------|
-| `Emission { k, means, variances }` | Holds emission parameters for all regimes |
-| `log_density(y, j)` | Returns $\ell_j(y)$ |
-| `density_vec(y)` | Returns `[f(y|0), …, f(y|k-1)]` used by filter and smoother |
+$$r_t = \log P_t - \log P_{t-1}$$
+$$a_t = |r_t|$$
+$$q_t = r_t^2$$
+$$v_t^{(w)} = \sqrt{\frac{1}{w}\sum_{k=0}^{w-1}(r_{t-k} - \bar{r}_t^{(w)})^2}$$
+$$z_t = r_t / (v_t^{(w)} + \varepsilon)$$
 
-### How it is used
-`Emission::density_vec()` is called inside `filter::bayes_update()` and `smoother::smooth()`. `log_density()` is called in `likelihood::log_likelihood_contributions()`.
+#### Code locations
 
-### E2E reachability
-Called on every observation in every experiment run.
+- `src/features/transform.rs` — pointwise transforms
+- `src/features/rolling.rs` — rolling stats + vol
+- `src/features/scaler.rs` — train-only scaling
+- `src/features/stream.rs` — pipeline orchestration
+- `src/features/family.rs` — `FeatureFamily` enum
 
-### Artifacts / outputs
-No direct artifact; contributes to `log_likelihood` in `fit_summary.json`.
+#### Key types / functions
 
-### Tests
-- `test_peak_density_at_mean` — density is maximised at $\mu_j$
-- `test_log_density_matches_ln_density` — log/exp consistency
-- `test_density_vec_sums_not_necessarily_one` — sanity on un-normalised densities
-- `test_log_density_extreme_sigma` — numerical stability with large/small variance
-- Several boundary tests
+- `FeatureFamily` — `{LogReturn, AbsReturn, SquaredReturn, RollingVol{window, session_reset}, StandardizedReturn{window, epsilon, session_reset}}`
+- `log_return(prev_price, curr_price) -> Option<f64>` — `src/features/transform.rs`
+- `abs_return()`, `squared_return()` — same file
+- `log_returns_session_aware()`, `abs_returns_session_aware()` — session-boundary variants
+- `rolling_vol(obs, window)` — trailing sample std dev of returns
+- `rolling_vol_session_aware()` — session-resetting variant
+- `standardized_returns()`, `standardized_returns_session_aware()`
+- `FittedScaler::fit(train_slice)` / `FittedScaler::apply(obs)` — Z-score; fit on train only
+- `FeatureStream::build(prices, meta, config)` — full pipeline entry point
+- `FeatureStreamMeta` — warmup_trimmed, n_feature_obs, session_aware, feature_label
 
-### Status
-**IMPLEMENTED_AND_USED**
+#### How it is used
 
-### Gaps / risks
-- No variance floor is enforced inside `Emission` itself; the floor is applied in the EM M-step (`EmConfig::var_floor`). If `Emission` is constructed with `variance = 0`, `log_density` returns `NaN`/`-Inf`. Only `ModelParams::validate()` and the EM guard against this.
+`RealBackend::build_features` constructs `StreamFeatureConfig` from `ExperimentConfig`, calls `FeatureStream::build`, trims warmup rows, scales using train partition only. `SyntheticBackend::build_features` applies Z-score only (feature family ignored for simulated Gaussian data). The resulting `FeatureBundle::observations` is the direct input to EM training and online detection.
 
-### Thesis note
-Direct implementation of § "Emission distribution". The Gaussian assumption is restrictive for fat-tailed financial returns; the thesis should acknowledge this and note that the Z-score normalisation partially mitigates it.
+#### E2E reachability
 
----
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | Yes | `run-real`, `e2e`, `optimize` |
+| Called by experiment runner | Yes | Both `SyntheticBackend` and `RealBackend` |
+| Used in synthetic workflow | Yes (scaler only) | Feature family bypassed; Z-score applied |
+| Used in real-data workflow | Yes | All 5 feature families used in various experiments |
+| Produces saved artifact | Yes | `feature_obs_snapshot.json` in run dirs |
+| Covered by tests | Partial | Unit tests in `transform.rs`, `rolling.rs`; no session-boundary integration tests |
 
-## 8. T5 — Synthetic Generator
+#### Artifacts / outputs
 
-### Theoretical object
-Forward simulation of a hidden Markov model to produce labelled regime sequences and Gaussian observations for benchmarking.
+`feature_obs_snapshot.json` (sample of first/last N feature values).
 
-### Expected equations / definitions
-1. Draw $s_1 \sim \pi$
-2. For $t = 2, \ldots, T$: draw $s_t \sim \text{Categorical}(A_{s_{t-1}, \cdot})$
-3. Draw $y_t \sim \mathcal{N}(\mu_{s_t}, \sigma^2_{s_t})$
+#### Tests
 
-### Code locations
-- `src/model/simulate.rs`
-- `src/experiments/synthetic_backend.rs` — `build_synthetic_params()`
+- `src/features/transform.rs` — `log_return`, `abs_return`, `squared_return` unit tests
+- `src/features/rolling.rs` — `rolling_vol` unit tests
+- `src/features/scaler.rs` — `FittedScaler` fit/apply tests
 
-### Key types / functions
-| Symbol | Role |
-|--------|------|
-| `simulate(params, t, rng)` | Main entry; returns `SimulationResult` |
-| `SimulationResult { states, observations, params }` | Full simulation output |
-| `build_synthetic_params(scenario_id, k)` | Constructs calibrated params for a named scenario |
+#### Status
 
-### How it is used
-`SyntheticBackend::resolve_data()` calls `build_synthetic_params()` then `simulate()`. The `states` vector provides ground-truth changepoint labels; `observations` becomes the observation sequence fed to the EM and online filter.
+`IMPLEMENTED_AND_USED`
 
-### E2E reachability
-Three registered synthetic experiments (`hard_switch`, `posterior_transition`, `surprise`) all use `SyntheticBackend` → `simulate()`.
+#### Gaps / risks
 
-### Artifacts / outputs
-`changepoints.csv` — ground-truth changepoint times (when `write_csv = true`).
+- No test that verifies that the scaler is **never** fit on validation/test data.
+- The session-aware variants require `meta.session_convention` to be set correctly; if a daily series is accidentally run with `session_aware=true`, no hard error is raised.
+- `SquaredReturn` and `StandardizedReturn` experiment configs exist in the registry but the thesis has not yet described these observation designs.
 
-### Tests
-- Phase 2 spec tests (a–f): correct sequence length, state distribution, observation distribution, reproducibility with fixed seed
+#### Thesis note
 
-### Status
-**IMPLEMENTED_AND_USED**
-
-### Gaps / risks
-- `build_synthetic_params()` defines its own hardcoded parameter tables. These are not derived from the calibration workflow; they are approximate hand-crafted values. Running the full calibration pipeline (`calibrate` CLI command) produces `CalibratedSyntheticParams` but the registered experiments do not consume them automatically.
-
-### Thesis note
-The simulation is used to validate the entire inference pipeline under known ground truth. Chapter 4 (experiments) should note the relationship between `build_synthetic_params` scenario definitions and the true target parameter ranges.
+The observation design chapter should state the five feature families, their warmup requirements, and the causality contract (every $y_t$ depends only on $P_1, \ldots, P_t$). The choice between `LogReturn` and `AbsReturn` is a scientific hypothesis: `LogReturn` makes the model sensitive to sign-bearing return shocks (regime changes in mean), while `AbsReturn` makes it sensitive to magnitude (volatility regime). `RollingVol` is sensitive to slow variance structure changes. The train-only Z-score normalization is a preprocessing convention, not a theoretical component.
 
 ---
 
-## 9. T6 — Forward Filter and Log-Likelihood
+### 4.3 Model Parameterization
 
-### Theoretical object
-The Hamilton (1989) forward filter: recursive computation of the filtered state posterior $\alpha_{t|t}(j) = P(s_t = j \mid y_{1:t})$ and the predictive density $c_t = p(y_t \mid y_{1:t-1})$.
+#### Theoretical object
 
-### Expected equations / definitions
-**Predict step:**
-$$\alpha_{t|t-1}(j) = \sum_{i=1}^k \alpha_{t-1|t-1}(i) \cdot A_{ij}$$
+Hidden regime structure: initial distribution $\pi$, transition matrix $P$, Gaussian emission parameters $(\mu_j, \sigma_j^2)$.
 
-**Update step:**
-$$\alpha_{t|t}(j) = \frac{\alpha_{t|t-1}(j) \cdot f(y_t \mid j)}{c_t}, \quad c_t = \sum_{j=1}^k \alpha_{t|t-1}(j) \cdot f(y_t \mid j)$$
+#### Expected constraints
 
-**Log-likelihood:**
-$$\mathcal{L}(\theta) = \sum_{t=1}^T \ln c_t$$
+$$\sum_j \pi_j = 1, \quad \pi_j \geq 0$$
+$$\sum_j p_{ij} = 1, \quad p_{ij} \geq 0 \quad \forall i$$
+$$\sigma_j^2 > 0 \quad \forall j$$
 
-### Code locations
-- `src/model/filter.rs`
-- `src/model/likelihood.rs`
+#### Code locations
 
-### Key types / functions
-| Symbol | Role |
-|--------|------|
-| `FilterResult { predicted, filtered, log_predictive, log_likelihood }` | Complete filter output |
-| `filter(params, obs)` | Main entry; runs full forward pass |
-| `predict(params, filtered_prev)` | One predict step |
-| `bayes_update(predicted, densities)` | One update step |
-| `log_sum_exp(log_probs)` | Numerically stable logsumexp |
-| `log_likelihood(params, obs)` | Convenience wrapper returning scalar LL |
-| `log_likelihood_contributions(params, obs)` | Per-step $\ln c_t$ |
+- `src/model/params.rs` — `ModelParams`
+- `src/model/mod.rs` — re-exports
 
-### How it is used
-- Offline: `filter()` called by `e_step()` in `fit_em()` during every EM iteration
-- Online: `OnlineFilterState::step()` replicates one predict+update step using the same arithmetic
-- Diagnostics: `FittedModelDiagnostics` runs `filter()` on held-out obs
+#### Key types / functions
 
-### E2E reachability
-Called on every EM iteration for all 6 registered experiments, and on every online observation.
+- `ModelParams { k: usize, pi: Vec<f64>, transition: Vec<f64>, means: Vec<f64>, variances: Vec<f64> }`
+- `ModelParams::new(pi, transition_rows, means, variances)`
+- `ModelParams::validate()` — checks all four constraint groups; tolerance `PROB_TOL = 1e-9`
+- `ModelParams::transition_row(i) -> &[f64]` — row-major indexing
+- `ModelParams` implements `Serialize + Deserialize` — JSON I/O for frozen models and snapshots
 
-### Artifacts / outputs
-`loglikelihood_history.csv` — per-iteration LL trace from EM (when `write_csv = true`).
+#### How it is used
 
-### Tests
-- `test_t1_exact_posterior` — analytical 2-state single-observation posterior
-- `test_filter_log_likelihood_finite` — no NaN/Inf for valid inputs
-- `test_filter_preserves_normalisation` — filtered posteriors sum to 1.0
-- `test_predict_step_stochastic_matrix` — predict output sums to 1
-- `test_bayes_update_normalises` — update output sums to 1
-- 6 additional scenario-invariant tests
+`ModelParams` is the central type of the system. It is constructed by `fit_em()`, loaded from disk by `FrozenModel::load`, consumed by `filter()`, `smooth()`, `pairwise()`, `OnlineFilterState::step()`, `simulate()`, and `diagnose()`. `validate()` is called at the start of `filter()`.
 
-### Status
-**IMPLEMENTED_AND_USED**
+#### E2E reachability
 
-### Gaps / risks
-- `log_sum_exp` is local to `filter.rs`; the same computation is duplicated inline in `emission.rs` and `online/mod.rs`. Divergence risk if one copy is updated.
-- The `log_predictive` field stores $\ln c_t$ but its sign convention (positive = log-probability, negative = surprise) is not documented in the struct; `SurpriseDetector` uses `-log_predictive` to compute surprise scores.
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | Yes (indirect) | Every run trains or loads a ModelParams |
+| Called by experiment runner | Yes | `train_or_load_model_shared` produces/loads it |
+| Used in synthetic workflow | Yes | Constructed from scenario configs |
+| Used in real-data workflow | Yes | Fitted by EM on real features |
+| Produces saved artifact | Yes | `model_params.json` in run dirs |
+| Covered by tests | Yes | `filter.rs` tests use it; `params.rs` has validation tests |
 
-### Thesis note
-Core algorithmic contribution. Present the predict + Bayes update in full matrix form, then show the log-space implementation in `filter.rs` as the direct code realisation.
+#### Artifacts / outputs
 
----
+`model_params.json`, `fit_summary.json`, `config.snapshot.json` (includes `k_regimes`).
 
-## 10. T7 — Backward Smoother
+#### Tests
 
-### Theoretical object
-Kim (1994) backward smoother: computation of the smoothed state posterior $\gamma_t(j) = P(s_t = j \mid y_{1:T})$.
+- `src/model/params.rs` — validate() tests (implicit via filter tests)
+- `src/model/filter.rs` — all tests construct and validate `ModelParams`
 
-### Expected equations / definitions
-**Terminal condition:** $\gamma_T(j) = \alpha_{T|T}(j)$
+#### Status
 
-**Backward recursion:**
-$$\gamma_{t}(j) = \alpha_{t|t}(j) \sum_{i=1}^k A_{ji} \frac{\gamma_{t+1}(i)}{\alpha_{t+1|t}(i)}$$
+`IMPLEMENTED_AND_USED`
 
-### Code locations
-- `src/model/smoother.rs`
+#### Gaps / risks
 
-### Key types / functions
-| Symbol | Role |
-|--------|------|
-| `SmootherResult { smoothed }` | $T \times k$ matrix of $\gamma_t(j)$ |
-| `smooth(params, filter_result)` | Runs backward pass; calls `filter()` internally if needed |
+- `src/model/validation.rs` exists alongside `params.rs`. Contents not fully inspected; its relationship to `ModelParams::validate()` is unclear. Could be dead code or supplementary validation. **Risk: duplicate validation logic.**
+- No test for `k >= 3` regime models despite the optimizer finding k=3 as best for real data.
 
-### How it is used
-Called by `e_step()` in `fit_em()` after the forward filter. The smoothed posteriors are consumed by `pairwise()` to compute $\xi_t(i,j)$.
+#### Thesis note
 
-### E2E reachability
-Every EM iteration for all 6 registered experiments.
-
-### Artifacts / outputs
-No direct artifact; intermediate step for EM M-step.
-
-### Tests
-- `terminal_condition_exact` — $\gamma_T = \alpha_{T|T}$
-- `smoothed_sums_to_one` — $\sum_j \gamma_t(j) = 1$ for all $t$
-- `smoother_more_decisive_at_regime_boundary` — smoothed is more concentrated than filtered near a true changepoint
-- 6 additional tests
-
-### Status
-**IMPLEMENTED_AND_USED**
-
-### Gaps / risks
-- Division by $\alpha_{t+1|t}(i)$ is numerically unsafe if the predicted probability is exactly zero (degenerate regime). Protected by a zero-check in the implementation, but no test exercises the exact-zero case.
-
-### Thesis note
-Present alongside T6 as the E-step pair: forward filter computes $\alpha_{t|t}$, backward smoother computes $\gamma_t$.
+The model parameterization chapter should state $K \geq 2$, define $\pi$, $P$, and $(\mu_j, \sigma_j^2)$ for $j = 1, \ldots, K$, and clarify the row-stochastic convention for $P$ (rows sum to 1, where $p_{ij}$ is the probability of transitioning from regime $i$ to regime $j$). The storage convention (row-major flat `Vec<f64>`) is an implementation detail.
 
 ---
 
-## 11. T8 — Pairwise Transition Posteriors
+### 4.4 Gaussian Emission Model
 
-### Theoretical object
-The pairwise smoothed posterior $\xi_t(i,j) = P(s_{t-1} = i, s_t = j \mid y_{1:T})$ required by the M-step update for the transition matrix.
+#### Theoretical object
 
-### Expected equations / definitions
-$$\xi_t(i,j) = \frac{\alpha_{t-1|t-1}(i) \cdot A_{ij} \cdot \gamma_t(j)}{\alpha_{t|t-1}(j)}$$
+$$y_t \mid S_t = j \sim \mathcal{N}(\mu_j, \sigma_j^2)$$
+$$f_j(y_t) = \frac{1}{\sqrt{2\pi\sigma_j^2}} \exp\left(-\frac{(y_t - \mu_j)^2}{2\sigma_j^2}\right)$$
 
-$$\hat{A}_{ij}^{\text{new}} = \frac{\sum_{t=2}^T \xi_t(i,j)}{\sum_{t=2}^T \gamma_{t-1}(i)}$$
+#### Code locations
 
-### Code locations
-- `src/model/pairwise.rs`
+- `src/model/emission.rs` — `Emission`
 
-### Key types / functions
-| Symbol | Role |
-|--------|------|
-| `PairwiseResult { xi, expected_transitions }` | Per-step $\xi_t(i,j)$ and summed $\hat{A}_{ij}$ numerators |
-| `pairwise(params, filter_result, smoother_result)` | Computes full $\xi$ tensor |
+#### Key types / functions
 
-### How it is used
-`e_step()` calls `pairwise()` and passes the result to `m_step()` which reads `expected_transitions` to update $A$.
+- `Emission::new(means: Vec<f64>, variances: Vec<f64>)` — constructed from `ModelParams`
+- `Emission::log_density(y: f64, j: usize) -> f64` — returns $\log f_j(y_t)$
+- Numerical implementation: `−0.5 * (ln(2π) + ln(σ²) + (y−μ)²/σ²)`
 
-### E2E reachability
-Every EM iteration for all 6 registered experiments.
+#### How it is used
 
-### Artifacts / outputs
-No direct artifact.
+`Emission` is constructed once per filter call in `filter()` and once per `OnlineFilterState::step`. It is never used for M-step updates (those use raw posteriors and observations directly). The log-density is combined with log-prior in `bayes_update()` using `log_sum_exp` to avoid underflow.
 
-### Tests
-- `pairwise_sums_to_smoother` — $\sum_j \xi_t(i,j) = \gamma_{t-1}(i)$
-- `pairwise_expected_transitions_row_sums` — consistency with M-step denominator
-- 7 additional structural tests
+#### E2E reachability
 
-### Status
-**IMPLEMENTED_AND_USED**
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | Yes (indirect) | Every filter call |
+| Called by experiment runner | Yes | filter → emission |
+| Used in synthetic workflow | Yes | EM training on simulated observations |
+| Used in real-data workflow | Yes | EM training on real features |
+| Produces saved artifact | Indirect | log-likelihood in fit_summary.json |
+| Covered by tests | Yes | `filter.rs` tests verify exact Bayes posteriors |
 
-### Gaps / risks
-- `PairwiseResult::xi` is a 3-D `Vec<Vec<Vec<f64>>>` ($T \times k \times k$); for large $T$ and $k$ this can be memory-intensive. Currently $k = 2$ in all experiments, so no practical issue.
+#### Tests
 
-### Thesis note
-Present the $\xi_t(i,j)$ formula clearly as the bridge between the E-step and the M-step transition update.
+- `src/model/filter.rs::test_t1_exact_posterior` — analytically verifies $f_j(y) \cdot \pi_j / c_1$ for $y=0$, $K=2$
+- `src/model/filter.rs::test_t1_exact_log_likelihood` — verifies $\log c_1 = \log \mathcal{N}(0; 0, 1)$
+- `src/model/emission.rs` — unit tests for individual density values (if present; not directly confirmed)
 
----
+#### Status
 
-## 12. T9 — EM Estimation
+`IMPLEMENTED_AND_USED`
 
-### Theoretical object
-Baum-Welch EM algorithm for maximum-likelihood estimation of $\theta$ given observations $y_{1:T}$.
+#### Gaps / risks
 
-### Expected equations / definitions
-**E-step:** Compute $\gamma_t(j)$ (smoother) and $\xi_t(i,j)$ (pairwise).
+- No dedicated emission test file; emission is tested indirectly through filter tests. A direct unit test of `Emission::log_density` for known inputs would strengthen coverage.
+- No numerical test for the underflow-prevention path (observations very far in the tail).
 
-**M-step updates:**
-$$\hat{\pi}_j = \gamma_1(j)$$
-$$\hat{A}_{ij} = \frac{\sum_{t=2}^T \xi_t(i,j)}{\sum_{t=2}^T \gamma_{t-1}(i)}$$
-$$\hat{\mu}_j = \frac{\sum_{t=1}^T \gamma_t(j) \cdot y_t}{\sum_{t=1}^T \gamma_t(j)}$$
-$$\hat{\sigma}^2_j = \max\!\left(\text{var\_floor},\ \frac{\sum_{t=1}^T \gamma_t(j) (y_t - \hat{\mu}_j)^2}{\sum_{t=1}^T \gamma_t(j)}\right)$$
+#### Thesis note
 
-**Convergence:** $|\mathcal{L}^{(n+1)} - \mathcal{L}^{(n)}| < \text{tol}$ or `max_iter` reached.
-
-**Multi-start:** Run $n_{\text{starts}}$ independent initialisations; return run with highest final LL.
-
-### Code locations
-- `src/model/em.rs`
-- `src/experiments/shared.rs` — `train_or_load_model_shared()`
-
-### Key types / functions
-| Symbol | Role |
-|--------|------|
-| `EmConfig { tol, max_iter, var_floor }` | Hyperparameters |
-| `EmResult { params, log_likelihood, ll_history, n_iter, converged }` | Fit output |
-| `fit_em(obs, config, k, n_starts, rng)` | Main entry; orchestrates multi-start |
-| `e_step(params, obs)` | Returns `EStepResult { filter, smoother, pairwise }` |
-| `m_step(e_step_result, obs)` | Returns updated `ModelParams` |
-
-### How it is used
-`train_or_load_model_shared()` calls `fit_em()` on the train partition. All 6 registered experiments use `TrainingMode::FitOffline` → `fit_em()` with `em_n_starts = 1`.
-
-### E2E reachability
-Training stage for every registered experiment.
-
-### Artifacts / outputs
-`fit_summary.json` (convergence flag, LL, n_iter, final params), `loglikelihood_history.csv`.
-
-### Tests
-- `log_likelihood_nondecreasing` — LL never decreases between EM iterations
-- `fit_em_basic_convergence` — fits a 2-regime model from clean synthetic data
-- `m_step_pi_sums_to_one` — $\hat{\pi}$ is a valid distribution
-- `m_step_transition_rows_sum_to_one`
-- `var_floor_applied` — variance never goes below `var_floor`
-- 1 additional multi-start test
-
-### Status
-**IMPLEMENTED_AND_USED**
-
-### Gaps / risks
-- All registered experiments set `em_n_starts: 1`. Multi-start EM is fully implemented and tested but is not exercised in any registered experiment. The `multi_start_summary.json` artifact is never produced in practice.
-- `init_params_from_obs()` is defined in **both** `src/experiments/shared.rs` (line ~253) and `src/experiments/synthetic_backend.rs`. This is a silent duplicate with divergence risk if one copy is updated. See [§22](#22-dead-code-and-duplicate-implementation-risks).
-
-### Thesis note
-The EM chapter should present the non-decreasing LL property (guaranteed by the EM construction) and discuss the multi-start protocol as a safeguard against local optima.
+The emission model is the sole distributional assumption. The thesis should state that $\mathcal{N}(\mu_j, \sigma_j^2)$ is chosen for tractability and that the log-density formulation $\log f_j(y) = -\frac{1}{2}[\log(2\pi\sigma_j^2) + (y-\mu_j)^2/\sigma_j^2]$ is used in the filter to avoid floating-point underflow via log-sum-exp.
 
 ---
 
-## 13. T10 — Diagnostics
+### 4.5 Synthetic Generator
 
-### Theoretical object
-Post-fit trust assessment: flag fitted parameters that suggest numerical or statistical pathologies before the model is used for online inference.
+#### Theoretical object
 
-### Expected equations / definitions
-- Near-zero variance: $\sigma^2_j < \epsilon$ for some threshold $\epsilon$
-- Nearly unused regime: $\sum_t \gamma_t(j) < \delta \cdot T$
-- EM non-monotonicity: $\mathcal{L}^{(n+1)} < \mathcal{L}^{(n)} - \epsilon$
-- Suspicious persistence: $A_{jj} > 1 - 10^{-4}$ (near-unit-root regime)
-- Instability across starts: $\max_i \max_j |A_{ij}^{(i)} - A_{ij}^{(0)}| > \delta$
+Simulate hidden Markov chain $S_1, \ldots, S_T$ and observations $y_1, \ldots, y_T$ from known parameters $\Theta$. True changepoints $\mathcal{C}^\star = \{t : S_t \neq S_{t-1}\}$.
 
-### Code locations
-- `src/model/diagnostics.rs`
+$$S_1 \sim \pi, \quad S_t \mid S_{t-1}=i \sim \text{Categorical}(P[i,\cdot])$$
+$$y_t \mid S_t = j \sim \mathcal{N}(\mu_j, \sigma_j^2)$$
+$$\tau_t \in \mathcal{C}^\star \iff S_t \neq S_{t-1}$$
 
-### Key types / functions
-| Symbol | Role |
-|--------|------|
-| `DiagnosticWarning` enum | 5 warning kinds |
-| `FittedModelDiagnostics { warnings, … }` | Per-run diagnostic output |
-| `MultiStartSummary` | Cross-start parameter stability |
-| `diagnose(result, obs)` | Runs all checks; returns `FittedModelDiagnostics` |
-| `compare_runs(results)` | Computes instability across starts |
+#### Code locations
 
-### How it is used
-`train_or_load_model_shared()` calls `diagnose()` after `fit_em()`. Warnings are propagated into `result.warnings` and serialised to `diagnostics.json`. `diagnostics_ok` field in `ModelArtifact` controls whether the runner marks the run as `RunStatus::Degraded`.
+- `src/model/simulate.rs` — `simulate()`, `simulate_with_jump()`
 
-### E2E reachability
-Every training stage for all 6 registered experiments. Warnings visible in CLI output and `diagnostics.json`.
+#### Key types / functions
 
-### Artifacts / outputs
-`diagnostics.json` — all warnings with descriptions, severity, per-regime statistics.
+- `simulate(params: ModelParams, t: usize, rng: &mut impl Rng) -> SimulationResult`
+- `simulate_with_jump(params, t, jump_params, rng)` — optional jump contamination
+- `SimulationResult { t, k, states, observations, params }`
+- `SimulationResult::changepoints() -> Vec<usize>` — 1-based changepoint times
+- `JumpParams { prob, scale_mult }` — outlier contamination
+- `ChangePointTruth::from_regime_sequence(regimes)` — also derives truth from states
 
-### Tests
-- `test_diagnose_no_warnings_on_healthy_params`
-- `test_diagnose_near_zero_variance`
-- `test_diagnose_nearly_unused_regime`
-- `test_compare_runs_unstable`
+#### How it is used
 
-### Status
-**IMPLEMENTED_AND_USED**
+`SyntheticBackend::resolve_data` calls `simulate(params, horizon, &mut rng)` then `sim.changepoints()` to populate `DataBundle::changepoint_truth`. The seed is deterministic from `cfg.reproducibility.seed`. Jump contamination is used for the `hard_switch_shock` experiment.
 
-### Gaps / risks
-- `diagnose()` always runs even when `n_starts = 1`, in which case the `UnstableAcrossStarts` warning can never fire. The check is benign but wasteful.
+#### E2E reachability
 
-### Thesis note
-The diagnostics layer is not a theoretical contribution but is essential validation infrastructure. A footnote in the experiments chapter should mention that all reported results passed the diagnostic checks.
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | Yes | `e2e`, `run-experiment` |
+| Called by experiment runner | Yes | `SyntheticBackend::resolve_data` |
+| Used in synthetic workflow | Yes | All 9 synthetic experiments |
+| Used in real-data workflow | No | Not applicable |
+| Produces saved artifact | Yes | `changepoints.json` in synthetic run dirs |
+| Covered by tests | Yes | `simulate.rs` tests; `filter.rs` uses simulate for longer test sequences |
 
----
+#### Tests
 
-## 14. T11 — Offline-Trained, Online-Filtered Runtime
+- `src/model/simulate.rs` — hidden path distribution, observation distribution, changepoint extraction tests
 
-### Theoretical object
-Deployment pattern: train $\hat{\theta}$ offline on historical data; freeze parameters; run the Hamilton filter online (causal, one-step-ahead) on new observations without re-fitting.
+#### Status
 
-### Expected equations / definitions
-Same predict + update as T6, but applied sequentially and causally:
-- At each step $t$, only $y_1, \ldots, y_t$ is seen.
-- Filtered posterior $\alpha_{t|t}$ is the live state estimate.
-- Predictive density $c_t$ and predicted posterior $\alpha_{t|t-1}$ are the inputs to detectors.
+`IMPLEMENTED_AND_USED`
 
-### Code locations
-- `src/online/mod.rs` — `OnlineFilterState`, `OnlineStepResult`
-- `src/detector/frozen.rs` — `FrozenModel`, `StreamingSession<D>`
-- `src/experiments/shared.rs` — `run_online_shared()`
+#### Gaps / risks
 
-### Key types / functions
-| Symbol | Role |
-|--------|------|
-| `OnlineFilterState { filtered, t, cumulative_log_score }` | Running filter state |
-| `OnlineFilterState::new(params)` | Initialises from $\pi$ |
-| `OnlineFilterState::step(y, params)` | One predict + update; returns `OnlineStepResult` |
-| `OnlineFilterState::step_batch(obs, params)` | Runs the full batch at once |
-| `FrozenModel { params }` | Immutable parameter holder |
-| `FrozenModel::from_em_result(result)` | Wraps fitted params |
-| `StreamingSession<D: Detector>` | Pairs `FrozenModel` with a `Detector` instance |
+- `hard_switch_shock` uses jump contamination but the jump parameters are not exported separately as a named artifact — the config snapshot contains them.
+- For multi-regime experiments (K=3+), the simulator is called but no dedicated K=3 synthetic scenario is registered in the registry.
 
-### How it is used
-`run_online_shared()` constructs `OnlineFilterState::new()` then iterates over features calling `step()` and the selected detector's `update()` on each step. Score traces and alarm indices are collected.
+#### Thesis note
 
-### E2E reachability
-All 6 registered experiments; the online pass runs on the full feature sequence (train + val + test) after model fitting.
-
-### Artifacts / outputs
-`score_trace.csv`, `alarms.csv`, `regime_posteriors.csv` (when `save_traces = true`).
-
-### Tests
-- `online/mod.rs`: `test_step_produces_valid_posteriors`, `test_cumulative_log_score_finite`, `test_step_batch_matches_sequential`
-
-### Status
-**IMPLEMENTED_AND_USED**
-
-### Gaps / risks
-- `StreamingSession<D>` is fully implemented with a clean generics interface but is **never instantiated** from the experiment runner. `run_online_shared()` constructs `OnlineFilterState` and detectors independently, bypassing `StreamingSession`. This is a latent API that is tested only indirectly through integration.
-- `TrainingMode::LoadFrozen { artifact_id }` config path is implemented in `DryRunBackend` and `train_or_load_model_shared()` but no registered experiment uses it, and the artifact path resolver for re-loading from disk is not implemented in `RealBackend` or `SyntheticBackend`.
-
-### Thesis note
-The offline-train / online-filter architecture is the central deployment design decision. Emphasise that frozen parameters mean the filter is deterministic given $\hat{\theta}$: reproducibility and computational efficiency are guaranteed.
+The simulator is the ground-truth oracle. In the thesis, emphasize that the only legitimate evaluation protocol for online detectors is: (1) simulate from a known $\Theta$, (2) run the detector causally, (3) compare alarms to $\mathcal{C}^\star$. The simulator makes this closed-loop evaluation possible without any assumptions about a real-world ground truth.
 
 ---
 
-## 15. T12 — Detector Family
+### 4.6 Forward Filter and Observed-Data Likelihood
 
-### Theoretical object
-A stateful alarm-generation layer that consumes filtered state estimates and fires an alarm when a regime-change signal exceeds a threshold, optionally with persistence and cooldown logic.
+#### Theoretical object
 
-### Expected equations / definitions
-**HardSwitch score:**
-$$s_t = \mathbf{1}\bigl[\operatorname{argmax}_j \alpha_{t|t}(j) \neq \operatorname{argmax}_j \alpha_{t-1|t-1}(j)\ \wedge\ \max_j \alpha_{t|t}(j) \geq \theta_{\text{conf}}\bigr]$$
+Hamilton (1989) forward filter. Computes filtered posterior $\alpha_{t|t}(j) = \Pr(S_t = j \mid y_{1:t})$ and observed-data log-likelihood $\log L(\Theta) = \sum_t \log c_t$.
 
-**PosteriorTransition (LeavePrevious) score:**
-$$s_t^{\text{leave}} = 1 - \alpha_{t|t}(r_{t-1})$$
+$$\alpha_{t|t-1}(j) = \sum_i p_{ij} \cdot \alpha_{t-1|t-1}(i)$$
+$$c_t = \sum_j f_j(y_t) \cdot \alpha_{t|t-1}(j)$$
+$$\alpha_{t|t}(j) = \frac{f_j(y_t) \cdot \alpha_{t|t-1}(j)}{c_t}$$
+$$\log L(\Theta) = \sum_t \log c_t$$
 
-**PosteriorTransition (TotalVariation) score:**
-$$s_t^{\text{TV}} = \frac{1}{2}\sum_{j=1}^k \bigl|\alpha_{t|t}(j) - \alpha_{t-1|t-1}(j)\bigr|$$
+#### Code locations
 
-**Surprise score:**
-$$s_t^{\text{surp}} = -\ln c_t - \text{EMA}_{t-1}(-\ln c)$$
+- `src/model/filter.rs` — `filter()`
 
-**Persistence policy:** alarm fires only if score $\geq \theta$ for $p$ consecutive steps.  
-**Cooldown policy:** suppress further alarms for $d$ steps after each alarm.
+#### Key types / functions
 
-### Code locations
-- `src/detector/mod.rs` — `Detector` trait, `DetectorInput`, `DetectorOutput`, `PersistencePolicy`
+- `filter(params: &ModelParams, obs: &[f64]) -> Result<FilterResult>`
+- `FilterResult { t, k, predicted, filtered, log_predictive, log_likelihood }`
+- `predict(params, filtered_prev, k) -> Vec<f64>` — prediction step
+- `bayes_update(emission, y, predicted, k) -> (Vec<f64>, f64)` — log-sum-exp Bayes update
+- `log_sum_exp(log_vals) -> f64` — numerical stability helper
+- `log_likelihood(params, obs) -> Result<f64>` in `src/model/likelihood.rs` — thin wrapper
+
+#### How it is used
+
+Called by `e_step()` in `em.rs` (offline EM), by `diagnose()` in `diagnostics.rs` (final inference pass), and directly by `log_likelihood()`. The online streaming equivalent is `OnlineFilterState::step()`.
+
+#### E2E reachability
+
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | Yes (indirect) | Every EM training call |
+| Called by experiment runner | Yes | `train_or_load_model_shared` → `fit_em` → `e_step` → `filter` |
+| Used in synthetic workflow | Yes | |
+| Used in real-data workflow | Yes | |
+| Produces saved artifact | Yes | log_likelihood in fit_summary.json; ll_history in fitted_params |
+| Covered by tests | Yes | 11+ dedicated filter tests in filter.rs |
+
+#### Tests (filter.rs)
+
+- `test_output_lengths` — shape invariants
+- `test_predicted_t1_equals_pi` — initial condition
+- `test_predicted_sum_to_1` — probability normalization (all t)
+- `test_filtered_sum_to_1` — probability normalization (all t)
+- `test_probabilities_in_unit_interval`
+- `test_log_likelihood_equals_sum_of_log_predictive`
+- `test_log_predictive_is_finite`
+- `test_t1_exact_posterior` — analytical Bayes check
+- `test_t1_exact_log_likelihood` — analytical likelihood check
+- `test_extreme_observation_locks_regime`
+- `test_prediction_step_matches_matrix_multiply`
+
+#### Status
+
+`IMPLEMENTED_AND_USED`
+
+#### Gaps / risks
+
+- The filter is not directly tested against the online streaming filter (`OnlineFilterState`) on the same observations. A consistency test confirming that `filter().filtered[T-1]` matches `OnlineFilterState` final state would strengthen the audit chain.
+- `log_likelihood_contributions()` in `likelihood.rs` is implemented but not used by any production code path.
+
+#### Thesis note
+
+The forward filter is the computational heart of the system. The thesis should state the exact recursion, note that $c_t$ plays a dual role as both a likelihood contribution and the normalization constant for $\alpha_{t|t}$, and emphasize the log-sum-exp formulation that prevents numerical underflow.
+
+---
+
+### 4.7 Backward Smoothing
+
+#### Theoretical object
+
+Backward smoother (Baum-Welch). Computes smoothed marginals $\gamma_t(j) = \Pr(S_t = j \mid y_{1:T})$ for the offline EM E-step.
+
+$$\gamma_T(j) = \alpha_{T|T}(j)$$
+$$\gamma_t(i) = \alpha_{t|t}(i) \sum_j \frac{p_{ij} \cdot \gamma_{t+1}(j)}{\alpha_{t+1|t}(j)}$$
+
+#### Code locations
+
+- `src/model/smoother.rs` — `smooth()`
+
+#### Key types / functions
+
+- `smooth(params: &ModelParams, filter_result: &FilterResult) -> Result<SmootherResult>`
+- `SmootherResult { smoothed: Vec<Vec<f64>> }` — shape T × K
+- `SmootherResult::smoothed[t][j]` = $\gamma_{t+1}(j)$ (0-based)
+
+#### How it is used
+
+Called exclusively from `e_step()` in `em.rs`. Never called from online detection, CLI, or any reporting path. This is correct by design: smoothed posteriors require the full sequence $y_{1:T}$ and are strictly offline.
+
+#### E2E reachability
+
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | No (indirect via EM) | |
+| Called by experiment runner | Yes (via fit_em) | |
+| Used in synthetic workflow | Yes | |
+| Used in real-data workflow | Yes | |
+| Produces saved artifact | No (intermediate only) | |
+| Covered by tests | Partial | Used in EM tests; dedicated smoother tests unclear |
+
+#### Status
+
+`IMPLEMENTED_AND_USED`
+
+#### Gaps / risks
+
+- No dedicated test that the smoother marginals $\gamma_t(j)$ sum to 1 for all $t$ (this is the fundamental posterior coherence check).
+- The docstring mentions the theoretical recursion clearly, but the normalization-by-predicted convention differs from some textbook formulations — worth an explicit note in the thesis.
+
+#### Thesis note
+
+The backward smoother should be described as a purely offline computation used only within the Baum-Welch E-step. Emphasize the relationship $\gamma_t(j) = \alpha_{t|t}(j) \cdot \beta_t(j) / \sum_{j'} \alpha_{t|t}(j') \beta_t(j')$, where the code uses the normalized ratio form involving $\alpha_{t+1|t}(j)$.
+
+---
+
+### 4.8 Pairwise Transition Posteriors
+
+#### Theoretical object
+
+Pairwise posterior $\xi_t(i,j) = \Pr(S_{t-1}=i, S_t=j \mid y_{1:T})$.
+
+$$\xi_t(i,j) = \alpha_{t-1|t-1}(i) \cdot p_{ij} \cdot \frac{\gamma_t(j)}{\alpha_{t|t-1}(j)}$$
+
+#### Code locations
+
+- `src/model/pairwise.rs` — `pairwise()`
+
+#### Key types / functions
+
+- `pairwise(params: &ModelParams, filter: &FilterResult, smoother: &SmootherResult) -> Result<PairwiseResult>`
+- `PairwiseResult { expected_transitions: Vec<Vec<f64>> }` — K×K matrix of $\sum_t \xi_t(i,j)$
+- The expected transition count $N_{ij} = \sum_{t=2}^T \xi_t(i,j)$ is what `m_step` uses
+
+#### How it is used
+
+Called from `e_step()` in `em.rs` to produce `EStepResult::expected_transitions`, which feeds the transition matrix M-step.
+
+#### E2E reachability
+
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | No (indirect via EM) | |
+| Called by experiment runner | Yes (via fit_em) | |
+| Produces saved artifact | No (intermediate) | |
+| Covered by tests | Partial | Tested indirectly through EM convergence |
+
+#### Status
+
+`IMPLEMENTED_AND_USED`
+
+#### Gaps / risks
+
+- No dedicated test that $\sum_{j} \xi_t(i,j) = \gamma_{t-1}(i)$ (marginal consistency). This is the key check that pairwise posteriors are coherent with smoothed marginals.
+- The diagnostics module (`diagnose`) checks posterior coherence but may not check this specific pairwise-marginal relationship.
+
+#### Thesis note
+
+The pairwise posteriors are the E-step quantities that make the Baum-Welch EM tractable. The thesis should state the formula explicitly and note that only the column sums $\sum_t \xi_t(i,j)$ are needed for the M-step, not the full T×K×K tensor.
+
+---
+
+### 4.9 EM Estimation (Baum-Welch)
+
+#### Theoretical object
+
+Expectation-Maximization for MSM. Iterates E-step (filter → smooth → pairwise) and M-step (update $\pi$, $P$, $\mu_j$, $\sigma_j^2$) until convergence.
+
+$$\pi_j^{new} = \gamma_1(j), \quad p_{ij}^{new} = \frac{\sum_t \xi_t(i,j)}{\sum_{t=1}^{T-1} \gamma_t(i)}$$
+$$\mu_j^{new} = \frac{\sum_t \gamma_t(j) y_t}{\sum_t \gamma_t(j)}, \quad (\sigma_j^2)^{new} = \frac{\sum_t \gamma_t(j)(y_t - \mu_j^{new})^2}{\sum_t \gamma_t(j)}$$
+
+#### Code locations
+
+- `src/model/em.rs` — `fit_em()`, `e_step()`, `m_step()`
+
+#### Key types / functions
+
+- `fit_em(obs: &[f64], init: ModelParams, cfg: &EmConfig) -> Result<EmResult>`
+- `EmConfig { tol: f64, max_iter: usize, var_floor: f64 }`
+- `EmResult { params, log_likelihood, ll_history, n_iter, converged }`
+- `EStepResult { smoothed, expected_transitions, log_likelihood }`
+- Constants: `WEIGHT_FLOOR = 1e-10`, `VAR_FLOOR = 1e-6`, `MONOTONE_TOL = 1e-8`
+- Multi-start: `train_or_load_model_shared` runs EM `n_starts` times and picks best LL
+
+#### How it is used
+
+`train_or_load_model_shared` calls `fit_em` (possibly multiple times for multi-start), passes the best result to `diagnose()`, and stores it in `ModelArtifact`. The `FrozenModel` is then constructed from the best `EmResult`.
+
+#### E2E reachability
+
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | Yes | `run-real`, `e2e`, `run-experiment` |
+| Called by experiment runner | Yes | `shared.rs::train_or_load_model_shared` |
+| Used in synthetic workflow | Yes | All 9 synthetic experiments |
+| Used in real-data workflow | Yes | 3 real experiments |
+| Produces saved artifact | Yes | fit_summary.json, ll_history, fitted_params, multi_start_summary.json |
+| Covered by tests | Yes | em.rs tests (convergence, monotonicity, EM update formulas) |
+
+#### Artifacts / outputs
+
+`fit_summary.json` (converged, n_iter, LL, ll_history), `model_params.json` (fitted Θ̂), `diagnostics.json`, optionally `multi_start_summary.json`.
+
+#### Tests (em.rs)
+
+- Convergence test: EM converges on separable K=2 data
+- Monotonicity test: ll_history is non-decreasing
+- M-step correctness: updated means are weighted averages of observations
+- Var floor enforcement: variance never below `VAR_FLOOR`
+
+#### Status
+
+`IMPLEMENTED_AND_USED`
+
+#### Gaps / risks
+
+- EM initialization uses a fixed heuristic (`init_params_from_obs` in `shared.rs`). No tests verify that poor initialization recovers correctly.
+- Multi-start chooses best by final LL only; no test that multi-start outperforms single-start on a difficult scenario.
+
+#### Thesis note
+
+The thesis should describe Baum-Welch EM as an instance of the general EM principle applied to the MSM: the E-step computes posterior expectations of the sufficient statistics under the current parameters, and the M-step maximizes the expected complete-data log-likelihood in closed form. Note the degenerate-case guards (`WEIGHT_FLOOR`, `VAR_FLOOR`) as numerical safety measures, not theoretical modifications.
+
+---
+
+### 4.10 Diagnostics
+
+#### Theoretical object
+
+Post-fit trust verification: parameter validity, posterior normalization, EM monotonicity, regime occupancy, expected duration $\mathbb{E}[D_j] = 1/(1-p_{jj})$, multi-start stability.
+
+#### Code locations
+
+- `src/model/diagnostics.rs` — `diagnose()`, `compare_runs()`
+
+#### Key types / functions
+
+- `diagnose(em: &EmResult, obs: &[f64]) -> Result<FittedModelDiagnostics>`
+- `FittedModelDiagnostics { is_trustworthy, warnings, param_validity, posterior_validity, convergence_summary, regime_summaries }`
+- `compare_runs(results: &[EmResult], obs: &[f64]) -> Result<MultiStartSummary>`
+- `DiagnosticWarning` — `{NearZeroVariance, NearlyUnusedRegime, EmNonMonotonicity, SuspiciousPersistence, UnstableAcrossStarts}`
+- `RegimeSummary { occupancy_share, expected_duration }` — expected duration from $1/(1-p_{jj})$
+
+#### How it is used
+
+`train_or_load_model_shared` calls `diagnose` on the best EM result. `diagnostics_ok = FittedModelDiagnostics::is_trustworthy` is stored in `ModelArtifact` and propagated to `result.json`. The CLI `calibrate` command also runs a calibration verification that touches `verify_calibration()`.
+
+#### E2E reachability
+
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | Yes | `run-real`, `e2e`, `calibrate` |
+| Called by experiment runner | Yes | `shared.rs` |
+| Produces saved artifact | Yes | `diagnostics.json` in each run dir |
+| Covered by tests | Partial | Warnings tested; `is_trustworthy` logic tested |
+
+#### Artifacts / outputs
+
+`diagnostics.json`, `multi_start_summary.json` (if `em_n_starts > 1`).
+
+#### Status
+
+`IMPLEMENTED_AND_USED`
+
+#### Gaps / risks
+
+- The threshold constants (`NEAR_ZERO_VAR_THRESHOLD = 1e-4`, `NEARLY_UNUSED_REGIME_SHARE = 0.01`) are internal constants not exposed to configuration. If a thesis experiment triggers a warning, the user cannot adjust the threshold without editing source.
+- `SuspiciousPersistence` threshold `1 − 1e-6` catches only extreme near-absorbing cases; moderate degenerate persistence (e.g., $p_{jj} = 0.9999$) will not raise a warning but may still indicate degeneracy for short observation sequences.
+
+#### Thesis note
+
+The diagnostics chapter should explain that fitted model quality cannot be assumed from convergence alone. List the six diagnostic categories and their practical interpretation: near-zero variance indicates potential overfitting to a single point; nearly unused regime suggests $K$ is too large; non-monotone EM is a numerical implementation bug (not expected in practice); suspicious persistence may indicate regime degeneracy.
+
+---
+
+### 4.11 Offline-Trained, Online-Filtered Runtime
+
+#### Theoretical object
+
+After fitting $\hat{\Theta}$ offline, parameters are frozen. The online detector runs the Hamilton filter causally using only $y_{1:t}$ at each step — no smoothing, no EM re-estimation.
+
+$$\alpha_{t|t}(j) \text{ updated by } y_t \text{ alone, using frozen } \hat{\Theta}$$
+
+#### Code locations
+
+- `src/online/mod.rs` — `OnlineFilterState`
+- `src/detector/frozen.rs` — `FrozenModel`, `StreamingSession`
+
+#### Key types / functions
+
+- `OnlineFilterState::new(params: &ModelParams)` — initialized with $\pi$
+- `OnlineFilterState::step(y: f64, params: &ModelParams) -> Result<OnlineStepResult>`
+- `OnlineStepResult { t, filtered, predicted_next, predictive_density, log_predictive }`
+- `FrozenModel { params: ModelParams }` — immutable wrapper documenting the fixed-parameter policy
+- `FrozenModel::from_em_result(em: &EmResult)`
+- `StreamingSession::new(frozen, detector_box) -> StreamingSession`
+- `StreamingSession::step(y: f64) -> SessionStepOutput`
+
+#### How it is used
+
+`run_online_shared` in `shared.rs` constructs `FrozenModel` from `ModelArtifact::params`, creates `OnlineFilterState::new(&frozen.params)`, and iterates `step(y)` over the full observation sequence. The `DetectorInput::from(step_result)` converts filter output to detector input.
+
+The `online` module has explicit architectural enforcement: it imports only `model::params` and `model::emission`. `smoother`, `pairwise`, `em`, and `diagnostics` are explicitly listed as forbidden imports in the module docstring.
+
+#### E2E reachability
+
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | Yes | All run commands |
+| Called by experiment runner | Yes | `run_online_shared` |
+| Used in synthetic workflow | Yes | |
+| Used in real-data workflow | Yes | |
+| Produces saved artifact | Yes | score_trace.csv, alarms.csv, regime_posteriors.csv |
+| Covered by tests | Partial | No direct test that online filter matches offline filter on same data |
+
+#### Status
+
+`IMPLEMENTED_AND_USED`
+
+#### Gaps / risks
+
+- **Critical gap**: No test that `OnlineFilterState::step` produces the same $\alpha_{t|t}$ as `filter().filtered[t]` when run on the same observation sequence. This is the key correctness invariant. If online and offline filters ever diverge, experiments will silently produce wrong results.
+- The `#[allow(dead_code)]` annotation on `FrozenModel` in `frozen.rs` suggests it was not always called from production — this has been verified as now resolved.
+
+#### Thesis note
+
+The offline-training, online-filtering architecture is the key two-stage design. The thesis should state it explicitly: $\hat{\Theta}$ is estimated once on historical data; at deployment, only the forward recursion is applied to new observations; no access to future observations or re-estimation is permitted. This is the causal guarantee.
+
+---
+
+### 4.12 Detector Family
+
+#### Theoretical object
+
+Three detectors built on top of the online filter. All share the `PersistencePolicy` (debounce + cooldown). Alarm fires after `required_consecutive` consecutive threshold crossings.
+
+**HardSwitch**: $\hat{S}_t = \arg\max_j \alpha_{t|t}(j)$; alarm when $\hat{S}_t \neq \hat{S}_{t-1}$.
+
+**PosteriorTransition — LeavePrevious**:
+$$s_t^{leave} = 1 - \alpha_{t|t}(r_{t-1}), \quad r_{t-1} = \arg\max_j \alpha_{t-1|t-1}(j)$$
+
+**PosteriorTransition — TotalVariation**:
+$$s_t^{TV} = \frac{1}{2}\sum_j |\alpha_{t|t}(j) - \alpha_{t-1|t-1}(j)|$$
+
+**Surprise (raw)**: $s_t^{surp} = -\log c_t$
+
+**Surprise (EMA-adjusted)**:
+$$s_t^{adj} = s_t^{surp} - b_{t-1}, \quad b_t = \alpha \cdot s_t^{surp} + (1-\alpha) \cdot b_{t-1}$$
+
+#### Code locations
+
+- `src/detector/mod.rs` — trait, shared types, `PersistencePolicy`
 - `src/detector/hard_switch.rs` — `HardSwitchDetector`
 - `src/detector/posterior_transition.rs` — `PosteriorTransitionDetector`
 - `src/detector/surprise.rs` — `SurpriseDetector`
-- `src/detector/frozen.rs` — `StreamingSession<D>`
 
-### Key types / functions
-| Symbol | File | Role |
-|--------|------|------|
-| `Detector` trait | mod.rs | `update(input) → DetectorOutput`, `reset()` |
-| `dominant_regime(filtered)` | mod.rs | `argmax_j α_{t\|t}(j)` |
-| `HardSwitchDetector` | hard_switch.rs | Discrete switch + confidence gate |
-| `PosteriorTransitionDetector { score_kind }` | posterior_transition.rs | LeavePrevious or TotalVariation |
-| `SurpriseDetector { ema_alpha }` | surprise.rs | EMA-adjusted log-predictive score |
+#### Key types / functions
 
-### How it is used
-`run_online_shared()` instantiates the detector specified by `cfg.detector.detector_type` and calls `detector.update()` on every online step. The three registered synthetic experiments each test one detector type. The three real experiments use `HardSwitch` and `Surprise`.
+- `Detector` trait: `update(&mut self, input: &DetectorInput) -> DetectorOutput`, `reset(&mut self)`
+- `DetectorInput { filtered, predicted_next, predictive_density, log_predictive, t }`
+- `DetectorOutput { score, alarm, alarm_event, t, ready }`
+- `AlarmEvent { t, score, detector_kind, dominant_regime_before, dominant_regime_after }`
+- `PersistencePolicy { required_consecutive, cooldown }` with `check(threshold_crossed) -> bool`
+- `HardSwitchConfig { threshold }` — threshold on posterior majority fraction
+- `PosteriorTransitionConfig { score_kind, threshold, persistence }`
+- `SurpriseConfig { threshold, ema_alpha: Option<f64>, persistence }`
 
-### E2E reachability
-- `HardSwitch`: `hard_switch` (synthetic), `hard_switch_shock` (synthetic), `real_spy_daily_hard_switch`, `real_spy_intraday_hard_switch`
-- `PosteriorTransition (Leave)`: `posterior_transition` (synthetic)
-- `PosteriorTransition (TV)`: `posterior_transition_tv` (synthetic) — **registered and exercised**
-- `Surprise`: `surprise` (synthetic), `real_wti_daily_surprise`
+#### How it is used
 
-### Artifacts / outputs
-`detector_config.json`, `score_trace.csv`, `alarms.csv`.
+`run_online_shared` constructs the detector from `ExperimentConfig::detector`, then calls `detector.update(&DetectorInput::from(&step))` for each observation. Alarm indices and score traces are collected into `OnlineRunArtifact`.
 
-### Tests
-- `hard_switch.rs`: threshold, persistence, cooldown unit tests
-- `posterior_transition.rs`: LeavePrevious and TotalVariation score correctness
-- `surprise.rs`: EMA baseline, threshold, persistence
-- Integration via `run_online_shared()` tests in `experiments/`
+#### E2E reachability
 
-### Status
-**IMPLEMENTED_AND_USED** — all four detector variants (HardSwitch, PosteriorLeave, PosteriorTV, Surprise) are registered, reachable, and exercised by named experiments.
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | Yes | All run commands |
+| Called by experiment runner | Yes | `run_online_shared` |
+| Used in synthetic workflow | Yes | All 9 synthetic experiments use detectors |
+| Used in real-data workflow | Yes | 3 real experiments |
+| Produces saved artifact | Yes | alarms.csv, score_trace.csv, detector_config.json |
+| Covered by tests | Yes | `detector/mod.rs` persistence tests; per-detector update tests |
 
-### Gaps / risks
-- No gradient-based sensitivity test: it is unknown how detector performance changes with small Δθ around the threshold.
+#### Artifacts / outputs
+
+`alarms.csv` (t, score columns), `score_trace.csv`, `detector_config.json`, `regime_posteriors.csv`.
+
+#### Tests
+
+- `src/detector/mod.rs` — `PersistencePolicy` unit tests (fires_immediately, cooldown, consecutive)
+- Per-detector: `hard_switch.rs`, `posterior_transition.rs`, `surprise.rs` — update logic tests
+
+#### Status
+
+`IMPLEMENTED_AND_USED`
+
+#### Gaps / risks
+
+- **`#[allow(dead_code, unused_imports)]`** on `posterior_transition.rs` and `surprise.rs` top-level. These were added to suppress warnings when the detectors weren't connected. Now they are connected but the attributes remain, creating a misleading signal.
+- No cross-detector test confirming that HardSwitch alarms on the same sequences where PosteriorTransition scores spike.
+- `SurpriseDetector` EMA variant had `ema_alpha=0.95` bug (fixed to 0.3 during verification). The registry entry now correctly states `ema_alpha=0.3`.
+
+#### Thesis note
+
+The thesis should describe the three detectors as a hierarchy of sensitivity. HardSwitch has the lowest sensitivity (requires the MAP regime to flip) and the highest interpretability. PosteriorTransition LeavePrevious is intermediate. Surprise (EMA-adjusted) is the most sensitive — it fires on model incompatibility before any posterior shift has occurred. The PersistencePolicy stabilization should be described as a practical debounce mechanism, not a theoretical component.
 
 ---
 
-## 16. T13 — Synthetic Benchmark Evaluation
+### 4.13 Synthetic Benchmark Evaluation
 
-### Theoretical object
-Ground-truth evaluation of detection delay and accuracy against a known changepoint schedule.
+#### Theoretical object
 
-### Expected equations / definitions
-**Greedy matching protocol:** Alarm $a_n$ is a true positive for changepoint $\tau_m$ iff $\tau_m \leq a_n < \tau_m + w$ and $\tau_m$ is unmatched.
+Ground-truth evaluation: align detector alarms $\mathcal{A}$ to true changepoints $\mathcal{C}^\star$ using causal greedy matching in window $[\tau, \tau+w)$.
 
-$$\text{Precision} = \frac{|\text{TP}|}{|\text{TP}| + |\text{FP}|}$$
-$$\text{Recall} = \frac{|\text{detected}|}{N_{\text{CP}}}$$
-$$\text{Delay} = a_n - \tau_m \quad \text{for matched pairs}$$
+$$\text{Precision} = \frac{|\text{TP}|}{|\mathcal{A}|}, \quad \text{Recall} = \frac{|\text{Detected}|}{|\mathcal{C}^\star|}, \quad \text{Miss rate} = 1 - \text{Recall}$$
+$$\text{FAR} = \frac{|\text{FP}|}{T}, \quad \text{Delay}_\tau = a_\tau^\star - \tau$$
 
-### Code locations
-- `src/benchmark/truth.rs` — `ChangePointTruth`, `from_regime_sequence()`
-- `src/benchmark/matching.rs` — `EventMatcher`, `MatchConfig { window }`, greedy protocol
+#### Code locations
+
+- `src/benchmark/truth.rs` — `ChangePointTruth`
+- `src/benchmark/matching.rs` — `EventMatcher`, `MatchResult`
 - `src/benchmark/metrics.rs` — `MetricSuite`
-- `src/benchmark/result.rs` — `AggregateResult`, `RunResult`
+- `src/benchmark/result.rs` — result types
 
-### Key types / functions
-| Symbol | Role |
-|--------|------|
-| `ChangePointTruth::from_regime_sequence(states)` | Extract changepoint times from simulated states |
-| `EventMatcher::match_events(truth, alarms, config)` | Returns `MatchResult` |
-| `MetricSuite::from_match(match_result)` | Computes precision/recall/delay/FAR |
+#### Key types / functions
 
-### How it is used
-`SyntheticBackend::evaluate_synthetic()` calls `ChangePointTruth::from_regime_sequence()` on the simulated states, then `EventMatcher::match_events()`, then `MetricSuite::from_match()`. Results populate `EvaluationSummary::Synthetic`.
+- `ChangePointTruth::from_regime_sequence(regimes) -> Result<Self>`
+- `EventMatcher::new(config: MatchConfig)::match_events(truth, alarms) -> MatchResult`
+- `MetricSuite::from_match(m: &MatchResult) -> MetricSuite`
+- `MatchConfig { window: usize }` — default window = 10
+- `Summary { n, mean, median, min, max }` — delay statistics
 
-### E2E reachability
-Three synthetic registered experiments.
+#### How it is used
 
-### Artifacts / outputs
-`summary.json` — evaluation summary with precision/recall/delay metrics.
+`SyntheticBackend::evaluate_synthetic` constructs `ChangePointTruth` from `data.changepoint_truth`, calls `EventMatcher::match_events`, then `MetricSuite::from_match`. Results are stored in `SyntheticEvalArtifact` and serialized to `evaluation_summary.json`.
 
-### Tests
-- `matching.rs`: exact greedy matching on known alarm/CP sequences, edge cases (no alarms, all alarms, window = 1)
-- `metrics.rs`: MetricSuite field correctness, precision/recall boundary conditions
+#### E2E reachability
 
-### Status
-**IMPLEMENTED_AND_USED**
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | Yes | `e2e`, `run-experiment` (synthetic mode) |
+| Called by experiment runner | Yes | `SyntheticBackend::evaluate_synthetic` |
+| Used in synthetic workflow | Yes | All 9 synthetic experiments |
+| Used in real-data workflow | No | Real eval uses different routes |
+| Produces saved artifact | Yes | evaluation_summary.json, metrics.md/csv/tex |
+| Covered by tests | Yes | benchmark/matching.rs, benchmark/metrics.rs tests |
 
-### Gaps / risks
-- `AggregateResult` and multi-run `BenchmarkLabel` in `result.rs` are implemented but not populated by any CLI command. Aggregate across multiple runs is only available programmatically.
-- The matching window $w$ is fixed per experiment in `ExperimentConfig`; no sensitivity sweep is registered.
+#### Tests
 
-### Thesis note
-The delay and precision/recall metrics are the primary quantitative outputs for the thesis results tables. The greedy matching protocol should be described and justified against the optimal bipartite matching alternative.
+- `src/benchmark/metrics.rs` — `perfect_detection_precision_recall_one`, `only_false_alarms_precision_zero`, `false_alarm_rate_correct`, `delay_summary_correct_values`, etc.
+- `src/benchmark/matching.rs` — greedy matching protocol tests
+- `src/benchmark/truth.rs` — `from_regime_sequence_correct`, validation tests
 
----
+#### Status
 
-## 17. T14 — Real-Data Evaluation
+`IMPLEMENTED_AND_USED`
 
-### Theoretical object
-Reference-free assessment of detector quality on real financial data where ground-truth labels do not exist.
+#### Gaps / risks
 
-### Expected equations / definitions
-**Route A — Proxy-event alignment:**
-- `event_coverage` = fraction of proxy events with at least one aligned alarm within tolerance
-- `alarm_relevance` = fraction of alarms that fall within any event window
+- The window size `w=10` is the default but is not parameterized per-experiment in `ExperimentConfig`. All synthetic experiments use the same window regardless of the simulated scenario's typical detection delay.
+- No test for edge case where an alarm fires at exactly $\tau$ (same-step detection, delay=0).
 
-**Route B — Segmentation self-consistency:**
-$$\text{coherence\_score} = \frac{\text{mean between-segment } |\Delta\mu|}{\text{mean within-segment } \sigma}$$
+#### Thesis note
 
-### Code locations
-- `src/real_eval/route_a.rs` — `ProxyEvent`, `EventAlignment`, `evaluate_proxy_events()`
-- `src/real_eval/route_b.rs` — `DetectedSegment`, `AdjacentSegmentContrast`, `evaluate_segmentation()`
-- `src/real_eval/report.rs` — `RealEvalResult`, `evaluate_real_data()`
-- `src/experiments/real_backend.rs` — `RealBackend::evaluate_real()`
-
-### Key types / functions
-| Symbol | Role |
-|--------|------|
-| `ProxyEvent { id, event_type, label, anchor }` | External reference event |
-| `RouteBConfig { min_len, short_segment_policy }` | Segmentation params |
-| `SegmentationGlobalSummary { coherence_score }` | Aggregate Route B metric |
-| `evaluate_real_data(meta, obs, alarm_indices, cfg)` | Orchestrator |
-
-### How it is used
-`RealBackend::evaluate_real()` calls `evaluate_real_data()`. Route A reads proxy event fixtures from disk (path derived from `cfg.meta.run_label`). Route B computes statistics directly from `alarm_indices` and the observation series.
-
-### E2E reachability
-Three registered real experiments. Route B always runs. Route A runs only if proxy event fixture files exist.
-
-### Artifacts / outputs
-`real_eval_summary.csv` — event_coverage, alarm_relevance, segmentation_coherence.  
-`route_a_result.json`, `route_b_result.json` — detailed per-event and per-segment data.
-
-### Tests
-- `route_a.rs`: `evaluate_proxy_events()` unit tests with fixture events
-- `route_b.rs`: segmentation correctness, short-segment policy, coherence formula
-
-### Status
-**IMPLEMENTED_AND_USED** — Route A and Route B both fully functional. Proxy event fixture files `data/proxy_events/spy.json` (13 events), `data/proxy_events/wti.json`, and `data/proxy_events/gold.json` are committed to the repository. Route A produced 1 matched event for SPY daily with `event_coverage=0.077`, `alarm_relevance=0.091`; low metric values reflect detector sensitivity relative to event density, not missing infrastructure.
-
-### Gaps / risks
-- The coherence score formula in `evaluate_segmentation()` uses mean absolute delta mean normalised by mean within-segment variance, but the exact formula is not documented in a docstring; the reader must infer it from code.
-
-### Thesis note
-Route A and Route B are original methodological contributions. The thesis should present them as the "ground-truth-free" evaluation framework and explain the proxy-event construction protocol.
+The evaluation protocol is causal: only alarms at or after the changepoint can be credited. The thesis should state the greedy-matching rule explicitly and justify the window width choice relative to the expected detection delay for each experiment. A window that is too wide inflates recall; a window that is too narrow inflates miss rate.
 
 ---
 
-## 18. T15 — Synthetic-to-Real Calibration
+### 4.14 Real-Data Evaluation
 
-### Theoretical object
-Mapping empirical statistics from a real data series to a synthetic MSM parameter set, so that simulated benchmarks reflect the statistical character of real financial data.
+#### Theoretical object
 
-### Expected equations / definitions
-**Regime persistence:** $\hat{A}_{jj} = 1 - 1/\bar{d}_j$ where $\bar{d}_j$ is target mean episode duration.
+Two reference-free evaluation routes for real data (no ground-truth changepoints).
 
-**Mean policies:**
-- `ZeroCentered`: $\hat{\mu}_j = 0$
-- `SymmetricAroundEmpirical`: $\hat{\mu}_j = \pm \delta$
-- `EmpiricalBaseline`: $\hat{\mu}_j = \bar{y}_j^{\text{emp}}$
+**Route A — Proxy events**: $\text{event\_coverage} = |\{\text{events matched}\}| / |\mathcal{E}|$, $\text{alarm\_relevance} = |\{\text{alarms matched}\}| / |\mathcal{A}|$.
 
-**Variance policies:**
-- `QuantileAnchored`: variances from empirical quantiles of the per-regime variance distribution
-- `RatioAroundEmpirical`: variances as multiples of empirical global variance
+**Route B — Segmentation consistency**: alarm-induced segments; between-segment contrast (coherence score) relative to within-segment variance.
 
-### Code locations
-- `src/calibration/summary.rs` — `EmpiricalCalibrationProfile`, `summarize_feature_stream()`
-- `src/calibration/mapping.rs` — `CalibrationMappingConfig`, `calibrate_to_synthetic()`
-- `src/calibration/verify.rs` — `CalibrationVerification`, `verify_calibration()`
-- `src/calibration/report.rs` — `CalibrationReport`, `run_calibration_workflow()`
-- `src/cli/mod.rs` — `cmd_calibrate()` wires CLI → `run_calibration_workflow()`
+#### Code locations
 
-### Key types / functions
-| Symbol | Role |
-|--------|------|
-| `EmpiricalCalibrationProfile` | Summary statistics from real feature stream |
-| `CalibratedSyntheticParams` | Output: full MSM params matched to empirical profile |
-| `JumpParams { prob, scale_mult }` | Jump-contamination params for `model::simulate` |
-| `calibrate_to_synthetic(profile, config)` | Mapping function |
-| `verify_calibration(calibrated, profile, tol)` | Sanity-check output against input |
-| `run_calibration_workflow(cfg, obs, meta)` | Orchestrator called by CLI |
-| `simulate_with_jump(params, t, rng, jump)` | Core simulation with optional Bernoulli shock overlay |
+- `src/real_eval/route_a.rs` — `evaluate_proxy_events()`
+- `src/real_eval/route_b.rs` — `evaluate_segmentation()`, `build_segments()`
+- `src/real_eval/report.rs` — `evaluate_real_data()`
 
-### How it is used
-CLI `calibrate` command → `run_calibration_workflow()` → `summarize_feature_stream()` → `calibrate_to_synthetic()` → `verify_calibration()`. The result is printed to the terminal and optionally serialised.
+#### Key types / functions
 
-When `CalibrationMappingConfig.jump` is `Some(JumpContamination)`, `run_calibration_workflow()` converts it to `JumpParams` and calls `simulate_with_jump()`, overlaying Bernoulli shocks (probability `jump_prob`, scale `jump_scale_mult × σⱼ`) on the Gaussian regime emissions. The `hard_switch_shock` registered experiment (scenario `shock_contaminated`) exercises this path via `calibrate --id hard_switch_shock`.
+- `ProxyEvent { id, event_type, label, asset_scope, anchor: ProxyEventAnchor }`
+- `ProxyEventAnchor::Point { at }` / `ProxyEventAnchor::Window { start, end }`
+- `RouteAConfig { point_policy: PointMatchPolicy }` — `{pre_bars, post_bars, causal_only}`
+- `ProxyEventEvaluationResult { event_coverage, alarm_relevance, alignments }`
+- `RouteBConfig { min_len, short_segment_policy }`
+- `DetectedSegment`, `SegmentSummary`, `AdjacentSegmentContrast`
+- `SegmentationEvaluationResult { coherence_score, segments, global_summary }`
+- `evaluate_real_data(observations, timestamps, alarms, proxy_events, ...)` → `RealEvalResult`
 
-### E2E reachability
-Reachable via `calibrate --id <id>`. Jump contamination path exercised by `calibrate --id hard_switch_shock`.
+#### How it is used
 
-### Artifacts / outputs
-`calibration_summary.json`, `synthetic_vs_empirical_summary.json`, `calibrated_scenario.json` (saved to `./runs/calibration/<id>/`).
+`RealBackend::evaluate_real` builds proxy event lists (hardcoded per dataset in `real_backend.rs`), calls `evaluate_real_data()`, and stores `route_a_result_json` and `route_b_result_json` in `RealEvalArtifact`.
 
-### Tests
-- `calibration/mapping.rs`: round-trip tests, boundary conditions, duration-to-transition formula
-- `calibration/verify.rs`: tolerance checks
+#### E2E reachability
 
-### Status
-**IMPLEMENTED_AND_USED** — `JumpContamination` config fully wired from `CalibrationMappingConfig` through `CalibratedSyntheticParams` to `simulate_with_jump()`. The `hard_switch_shock` registered experiment exercises the complete jump-contamination calibration path.
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | Yes | `run-real`, `e2e` (real experiments) |
+| Called by experiment runner | Yes | `RealBackend::evaluate_real` |
+| Used in real-data workflow | Yes | 3 real experiments |
+| Produces saved artifact | Yes | route_a_result.json, route_b_result.json |
+| Covered by tests | Partial | Unit tests in route_a, route_b; no integration test |
 
-### Gaps / risks
-- Calibrated params are not consumed by any registered experiment; the calibration workflow is a standalone analysis tool disconnected from the experiment pipeline.
-- `CalibrationReport` is printed but not written to a stable file path. There is no `calibration_report.json` artifact.
+#### Artifacts / outputs
 
----
+`route_a_result.json`, `route_b_result.json`, `evaluation_summary.json` (event_coverage, alarm_relevance, segmentation_coherence).
 
-## 19. T16 — Experiment Runner
+#### Status
 
-### Theoretical object
-Orchestration layer that composes data, features, model, online filter, and evaluation into a reproducible, serialisable experiment run.
+`IMPLEMENTED_AND_USED`
 
-### Expected equations / definitions
-No new mathematics. The runner is pure software engineering: pipeline composition, timing, artifact management, reproducibility.
+#### Gaps / risks
 
-### Code locations
-- `src/experiments/runner.rs` — `ExperimentBackend` trait, `ExperimentRunner<B>`, `DryRunBackend`
-- `src/experiments/config.rs` — `ExperimentConfig` and all sub-configs
-- `src/experiments/registry.rs` — 8 registered experiments
-- `src/experiments/shared.rs` — shared training and online stages
-- `src/experiments/synthetic_backend.rs` — `SyntheticBackend`
-- `src/experiments/real_backend.rs` — `RealBackend`
-- `src/experiments/batch.rs` — `run_batch()`
-- `src/experiments/search.rs` — `grid_search()`, `optimize_full()`
-- `src/experiments/artifact.rs` — artifact file management
-- `src/experiments/result.rs` — `ExperimentResult`, `EvaluationSummary`
+- Proxy events are hardcoded in `real_backend.rs`. For the thesis, the exact event list for each asset should be documented as a named table in the thesis appendix.
+- Route B coherence score definition should be stated precisely in the thesis — it is implemented in `evaluate_segmentation()` but the exact formula is not externally documented.
+- No sensitivity analysis of Route A to the `pre_bars`/`post_bars` tolerance parameters.
 
-### Key types / functions
-| Symbol | Role |
-|--------|------|
-| `ExperimentBackend` trait | 6 methods: resolve_data, build_features, train_or_load_model, run_online, evaluate_synthetic, evaluate_real |
-| `ExperimentRunner::run(cfg)` | Main entry; 6 stages with timing and error recovery |
-| `DryRunBackend` | Deterministic stub for orchestration tests |
-| `run_batch(configs, backend)` | Runs multiple experiments sequentially |
-| `grid_search(backend, base_cfg, param_grid)` | Threshold/persistence sweep |
-| `optimize_full(backend, base_cfg, model_grid, param_grid)` | Full model + detector grid search |
+#### Thesis note
 
-### Registered experiments
-| ID | Mode | Asset | Detector | Horizon |
-|----|------|-------|----------|---------|
-| `hard_switch` | Synthetic | — | HardSwitch | 2000 |
-| `posterior_transition` | Synthetic | — | PosteriorTransition (Leave) | 2000 |
-| `posterior_transition_tv` | Synthetic | — | PosteriorTransition (TV) | 2000 |
-| `surprise` | Synthetic | — | Surprise | 2000 |
-| `hard_switch_shock` | Synthetic | — | HardSwitch (shock_contaminated) | 2000 |
-| `real_spy_daily_hard_switch` | Real | SPY daily | HardSwitch | — |
-| `real_wti_daily_surprise` | Real | WTI daily | Surprise | — |
-| `real_spy_intraday_hard_switch` | Real | SPY 15min | HardSwitch | — |
-
-### How it is used
-CLI `run-experiment <id>` → `registry::get(id)` → `ExperimentRunner::run()`. `run-batch` calls `run_batch()`. `param-search` calls `grid_search()`. `optimize` calls `optimize_full()`.
-
-### E2E reachability
-All 8 experiments reachable via direct CLI commands.
-
-### Artifacts / outputs
-Run directory tree under `runs/<mode>/<label>/<run_id>/`:
-- `config/experiment_config.json`
-- `metadata/run_metadata.json`
-- `results/evaluation_summary.json`, `summary.json`
-- `model_params.json`, `fit_summary.json`, `diagnostics.json`
-- `feature_summary.json`, `detector_config.json`
-- `score_trace.csv`, `alarms.csv`, `regime_posteriors.csv` (if save_traces)
-- `changepoints.csv` (synthetic), `real_eval_summary.csv` (real)
-- `split_summary.json`, `data_quality.json` (real)
-
-### Tests
-- `experiments/runner.rs`: `test_runner_dry_run_completes`, `test_runner_timing_stages_recorded`, `test_runner_invalid_config_fails_gracefully`, reproducibility tests
-- `experiments/real_backend.rs`: `resolve_data_train_n_is_seventy_percent`, `full_pipeline_with_fixture_data`
-- `experiments/batch.rs`: batch orchestration tests
-
-### Status
-**IMPLEMENTED_AND_USED**
-
-### Gaps / risks
-- `#![allow(dead_code)]` suppressor at the top of `runner.rs`, `search.rs`, `batch.rs` — indicates public APIs that are not yet all called from tests or CLI. Should be audited when the codebase stabilises.
-- `init_params_from_obs()` duplicate (see T9 and §22).
-- `TrainingMode::LoadFrozen` path is not implemented in `SyntheticBackend` or `RealBackend` — calling it returns a `not implemented` error.
-
-### Thesis note
-The runner architecture allows the thesis to present experiments as reproducible, identified by `run_id` (derived from config hash + timestamp). This is a software-engineering contribution that enables the repeatability claims.
+The real-data evaluation chapter should explain why ground-truth changepoints don't exist for financial data, then describe Routes A and B as complementary proxy evaluations: Route A tests whether alarms are news-relevant; Route B tests whether the induced segmentation is statistically meaningful. Neither route provides a definitive precision/recall — they are diagnostic rather than definitive.
 
 ---
 
-## 20. T17 — Reporting and Plotting
+### 4.15 Synthetic-to-Real Calibration
 
-### Theoretical object
-Artefact generation: export run results as JSON/CSV for archival, as Markdown/LaTeX tables for the thesis, and as PNG plots for visualisation.
+#### Theoretical object
 
-### Expected equations / definitions
-No new mathematics. Metrics tables present T13/T14 outputs. Plots render time-series with alarm markers, posterior probability traces, score traces.
+Mapping $\mathcal{K}: (T_1^{real}, \ldots, T_m^{real}) \mapsto \vartheta$ from empirical summary statistics of real observations to synthetic generator parameters.
 
-### Code locations
-- `src/reporting/mod.rs` — re-exports; plot render functions always compiled (no test gate)
-- `src/reporting/report.rs` — `RunReporter { export_run, generate_tables, generate_plots }`, `AggregateReporter`
-- `src/reporting/artifact.rs` — `RunArtifactLayout` path resolver
-- `src/reporting/export/json.rs` — `export_config`, `export_result`, `export_evaluation_summary`
-- `src/reporting/export/csv.rs` — CSV export helpers
-- `src/reporting/export/schema.rs` — serialisable record types
-- `src/reporting/table/metrics.rs` — `MetricsTableBuilder` (markdown/CSV/LaTeX output)
-- `src/reporting/table/comparison.rs` — comparison table
-- `src/reporting/table/segment_summary.rs` — segment summary
-- `src/reporting/plot/signal_alarms.rs` — `render_signal_with_alarms`
-- `src/reporting/plot/detector_scores.rs` — `render_detector_scores`
-- `src/reporting/plot/regime_posteriors.rs` — `render_regime_posteriors`
-- `src/reporting/plot/delay_distribution.rs`
-- `src/reporting/plot/segmentation.rs`
+$$p_{jj} = 1 - \frac{1}{d_j} \quad \text{where } d_j = \text{expected regime duration}$$
 
-### Key types / functions
-| Symbol | Role |
-|--------|------|
-| `RunReporter::export_run()` | Writes JSON config + result |
-| `RunReporter::generate_tables()` | Writes metrics.md / metrics.csv / metrics.tex |
-| `RunReporter::generate_plots()` | Renders PNG plots |
-| `AggregateReporter::generate_comparison_table()` | Multi-run comparison, exposed via `compare-runs` CLI |
-| `MetricsTableBuilder` | Fluent builder for Markdown/CSV/LaTeX metric tables |
+#### Code locations
 
-### How it is used
-`ExperimentRunner::run()` directly calls the export functions inline (JSON, CSV). `RunReporter` is instantiated for full reporting. Plot render functions are always compiled; they are called during non-test experiment runs. `AggregateReporter` is reachable via `compare-runs --dir <dir> [--dir <dir> ...] [--save <path>]`.
+- `src/calibration/summary.rs` — `summarize_feature_stream()`
+- `src/calibration/mapping.rs` — `calibrate_to_synthetic()`
+- `src/calibration/verify.rs` — `verify_calibration()`
+- `src/calibration/report.rs` — `run_calibration_workflow()`
 
-### E2E reachability
-JSON and CSV exports: all 8 registered experiments (when `write_json = true`).  
-Table generation: called after every `run-experiment` command.  
-Plot generation: called for all experiment runs.  
-`AggregateReporter`: **reachable via `compare-runs` CLI subcommand**.
+#### Key types / functions
 
-### Artifacts / outputs
-See [T16 artifacts](#19-t16--experiment-runner). Additionally:
-- `tables/metrics_table.md`, `tables/metrics_table.tex`
-- `plots/signal_with_alarms.png`, `plots/detector_scores.png`, `plots/regime_posteriors.png`
+- `EmpiricalCalibrationProfile` — empirical quantiles, durations, mean, variance
+- `SummaryTargetSet` — named set of targets
+- `CalibrationMappingConfig { k, horizon, mean_policy, variance_policy, target_durations, jump }`
+- `MeanPolicy` — `{ZeroCentered, SymmetricAroundEmpirical, EmpiricalBaseline}`
+- `VariancePolicy` — `{QuantileAnchored, RatioAroundEmpirical}`
+- `CalibratedSyntheticParams { model_params, horizon, expected_durations, jump, mapping_notes }`
+- `calibrate_to_synthetic(profile, config)` — implements $p_{jj} = 1 - 1/d_j$
+- `verify_calibration(empirical, synthetic, tol)` — discrepancy checks
+- `run_calibration_workflow(...)` → `CalibrationReport` — end-to-end artifact
 
-### Tests
-- `reporting/export/schema.rs`: serialisation round-trip for `AlarmRecord`
-- Plot input struct serialisation tested
+#### How it is used
 
-### Status
-**IMPLEMENTED_AND_USED** — JSON/CSV/table export wired to all experiment runs; `#[cfg(not(test))]` gates removed so render functions are always compiled; `AggregateReporter` exposed via `compare-runs` CLI subcommand.
+The `calibrate` CLI subcommand (`direct_calibrate` in `cli.rs`) runs the full calibration workflow. The interactive CLI also exposes calibration via `cmd_calibrate_scenario()`. The calibration mapping is used to set up the `hard_switch` and `hard_switch_shock` experiment configs in `registry.rs`.
 
-### Gaps / risks
-- `#![allow(dead_code)]` on `reporting/report.rs`, `reporting/artifact.rs`, `reporting/export/schema.rs` — some struct fields or methods may be unused.
-- No integration test exercises the full plot-generation path (render functions call the plotters bitmap backend which writes files; this is excluded from unit tests to keep test execution fast).
+#### E2E reachability
 
-### Thesis note
-The LaTeX table output from `MetricsTableBuilder` can be embedded directly in the thesis results chapter. The plot PNG files are suitable for figures.
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | Yes | `cargo run -- calibrate --id <id>` (synthetic + real experiments) |
+| Called by experiment runner | Partial | Calibrated params fed into registry, not called per-run |
+| Produces saved artifact | Yes | calibration_report.json, calibration_summary.txt |
+| Covered by tests | Partial | verify_calibration tested; end-to-end not tested |
+
+#### Status
+
+`IMPLEMENTED_AND_USED`
+
+#### Gaps / risks
+
+- The calibration mapping is called during experiment config construction in `registry.rs` (the scenario-specific builders call the mapping to derive `p_jj`), but the full `run_calibration_workflow` is only triggered by the `calibrate` CLI command — it is not automatically called when running `e2e`.
+- `target_durations: vec![]` in the default config means durations are inferred from empirical episode durations — this inference path needs to be explicitly tested.
+- The empirical calibration targets (SPY log return distribution) are not saved as named artifacts in the standard run directory.
+
+#### Thesis note
+
+The calibration chapter should describe the mapping $\mathcal{K}$ as a function from empirical observation statistics (mean, low/high variance quantile, typical episode duration) to MSM generator parameters. Emphasize that $p_{jj} = 1 - 1/d_j$ is the closed-form relationship between the self-transition probability and the geometric expected duration $d_j$.
 
 ---
 
-## 21. T18 — CLI / Interactive Application Layer
+### 4.16 Experiment Runner
 
-### Theoretical object
-User interface: interactive terminal menus (using `inquire`) and direct subcommand dispatch for headless / scripted use.
+#### Theoretical object
 
-### Expected equations / definitions
-None.
+$$\text{ExperimentConfig} \rightarrow \text{ExperimentResult}$$
 
-### Code locations
-- `src/main.rs` — entry point, `is_direct_command()`, `main()`
-- `src/cli/mod.rs` — `run()` (interactive), `run_direct()` (direct)
+A 6-stage pipeline: resolve_data → build_features → train_or_load_model → run_online → evaluate → export.
 
-### Key types / functions
-| Symbol | Role |
-|--------|------|
-| `is_direct_command(arg)` | Returns true if arg matches any known subcommand |
-| `cli::run(cfg)` | Interactive mode with `inquire` menus |
-| `cli::run_direct(args)` | Direct subcommand dispatch |
+#### Code locations
 
-### Interactive menus
-```
-Main menu:
-  Data management
-    Refresh data  →  DataService::refresh()
-    Show status   →  DataService::status()
-    Ingest all    →  DataService::ingest_all()
-  Experiments
-    run hard_switch
-    run posterior_transition
-    run surprise
-    run real_spy_daily_hard_switch
-    run real_wti_daily_surprise
-    run real_spy_intraday_hard_switch
-  Inspect Runs    →  list run directories
-  E2E Run         →  synthetic e2e pipeline
-  Exit
-```
+- `src/experiments/runner.rs` — `ExperimentRunner`, `ExperimentBackend` trait
+- `src/experiments/shared.rs` — shared stages 3 and 4
+- `src/experiments/synthetic_backend.rs` — synthetic stages
+- `src/experiments/real_backend.rs` — real stages
+- `src/experiments/config.rs` — `ExperimentConfig`
+- `src/experiments/registry.rs` — 12 registered experiments
 
-### Direct subcommands
-| Subcommand | Action |
-|------------|--------|
-| `e2e` | Synthetic end-to-end test |
-| `param-search` | Threshold/persistence grid search |
-| `run-experiment <id>` | Single registered experiment |
-| `run-batch` | All registered experiments |
-| `run-real <id>` | Real experiment |
-| `calibrate` | Calibration workflow |
-| `optimize` | Full model + detector grid search |
-| `inspect` | List run artefact directories |
-| `status` | Data cache status |
-| `help` | Usage |
+#### Key types / functions
 
-### E2E reachability
-All subcommands tested manually. Automated integration test: `DryRunBackend` tests cover the `run-experiment` path end-to-end.
+- `ExperimentBackend` trait: 6 methods (`resolve_data`, `build_features`, `train_or_load_model`, `run_online`, `evaluate_synthetic`, `evaluate_real`)
+- `ExperimentRunner::new(backend)::run(cfg) -> ExperimentResult`
+- `DryRunBackend` — no-op backend for testing pipeline structure
+- `SyntheticBackend` — full math stack for simulated experiments
+- `RealBackend` — DuckDB + feature pipeline for real-data experiments
+- `DataBundle`, `FeatureBundle`, `ModelArtifact`, `OnlineRunArtifact`, `SyntheticEvalArtifact`, `RealEvalArtifact`
 
-### Artifacts / outputs
-Interactive: formatted terminal output.  
-Direct: same artifacts as T16/T17.
+#### E2E reachability
 
-### Tests
-- CLI dispatch logic is tested through `experiments/runner.rs` dry-run tests
-- No dedicated CLI unit tests
+All 6 stages confirmed reachable for both synthetic and real modes via the `e2e` command.
 
-### Status
-**IMPLEMENTED_AND_USED**
+#### Status
 
-### Gaps / risks
-- No automated test for `is_direct_command()` or the menu dispatch logic.
-- `inspect` and `status` commands are not tested.
-- `help` output is hardcoded — will drift from actual subcommand set if commands are added.
+`IMPLEMENTED_AND_USED`
 
-### Thesis note
-The CLI layer is an implementation detail; the thesis may describe it briefly as "a command-line interface providing access to all experimental workflows."
+#### Gaps / risks
+
+- `DryRunBackend` is used in the interactive menu's "Run from Registry" path (no real computation). This is correct for quick preview, but a user who selects "Run from Registry" in the interactive menu and expects real results will get empty artifacts. The warning is now printed prominently.
+- `run_batch` uses `DryRunBackend` only — there is no batch execution path that calls `SyntheticBackend` or `RealBackend` for real computation.
+
+#### Thesis note
+
+The experiment runner implements the canonical scientific reproducibility requirement: every run is fully determined by its `ExperimentConfig` (including seed) and produces a deterministic, stamped artifact directory. The thesis should show the config-to-result diagram and emphasize that results are reproducible by re-running the same `--id`.
 
 ---
 
-## 22. Dead Code and Duplicate-Implementation Risks
+### 4.17 Reporting and Plotting
 
-### High-severity risks
+#### Theoretical object
 
-#### 1. `init_params_from_obs()` defined twice
-- **Files:** `src/experiments/shared.rs` (line ~253) and `src/experiments/synthetic_backend.rs`
-- **Risk:** Silent divergence. If one copy is updated (e.g., better initialisation heuristic) and the other is not, the two backends will initialise EM with different strategies without a compile error.
-- **Recommended fix:** Delete one copy; have the other call through.
+Reproducible artifacts: every run produces a complete directory of JSON/CSV/Markdown/LaTeX/PNG artifacts sufficient to reconstruct all results without re-running.
 
-#### 2. `JumpContamination` — **RESOLVED**
-- `JumpParams` added to `model::simulate`; `simulate_with_jump()` applies Bernoulli shocks; `run_calibration_workflow()` passes jump config; `hard_switch_shock` experiment exercises the path.
+#### Code locations
 
-#### 3. Route A proxy event fixtures — **RESOLVED**
-- `data/proxy_events/spy.json` (13 events), `wti.json`, and `gold.json` are committed. Route A is functional; SPY daily produced 1 match with `event_coverage=0.077`, `alarm_relevance=0.091`.
+- `src/reporting/report.rs` — `RunReporter`, `AggregateReporter`
+- `src/reporting/export/` — JSON/CSV writers
+- `src/reporting/plot/` — 5 plot builders
+- `src/reporting/table/` — 3 table builders
+- `src/reporting/artifact.rs` — `RunArtifactLayout`
 
-### Medium-severity risks
+#### Key types / functions
 
-#### 4. `StreamingSession<D>` — implemented but never instantiated from runner
-- **File:** `src/detector/frozen.rs`
-- **Risk:** `StreamingSession` provides a clean, type-safe pairing of `FrozenModel` and `Detector`. The runner bypasses it entirely, creating a gap between the public API design and actual usage.
-- **Recommended fix:** Refactor `run_online_shared()` to use `StreamingSession`, or document clearly that it is a lower-level API for embedding use.
+- `RunReporter::export_run(config, result)` — config snapshot + result JSON
+- `RunReporter::generate_tables(result)` — metrics.md, metrics.csv, metrics.tex
+- `render_detector_scores(input, path)` — detector score time series with alarms
+- `render_regime_posteriors(input, path)` — posterior probability per regime over time
+- `render_signal_with_alarms(input, path)` — raw signal with alarm markers
+- `render_segmentation(input, path)` — Route B segment visualization
+- `render_delay_distribution(input, path)` — delay histogram (NOT called from runner)
+- `MetricsTableBuilder::to_markdown()` / `to_csv()` / `to_latex()`
 
-#### 5. `TrainingMode::LoadFrozen` — config path with no backend implementation
-- **File:** `src/experiments/config.rs`, `shared.rs`
-- **Risk:** A user can write a config with `training = "LoadFrozen"` but it will error at runtime for `SyntheticBackend` and `RealBackend`.
-- **Recommended fix:** Implement artifact re-loading in both backends, or remove the variant with a `todo!()` + doc note.
+#### E2E reachability
 
-#### 6. `PosteriorTransitionTV` — **RESOLVED**
-- `posterior_transition_tv` registered experiment added; the TV detector is now exercised end-to-end.
+| Usage path | Present? | Evidence |
+|---|---|---|
+| Called by CLI | Yes | All run commands; `generate-report` re-runs pipeline |
+| Called by experiment runner | Yes | `ExperimentRunner::run` calls `RunReporter` |
+| Produces saved artifact | Yes | 21-23 artifacts per run dir confirmed |
+| Covered by tests | Partial | Table builders tested; plots not tested (gated with `#[cfg(not(test))]`) |
 
-#### 7. `AggregateReporter::generate_comparison_table()` — **RESOLVED**
-- `compare-runs --dir <dir> [--dir <dir> ...] [--save <path>]` CLI subcommand added.
+#### Status
 
-#### 8. `em_n_starts = 1` for all registered experiments
-- **Risk:** Multi-start EM is implemented and tested but never exercised in registered experiments. `multi_start_summary.json` is never produced.
-- **Recommended fix:** Set `em_n_starts: 3` in at least one registered experiment.
+`IMPLEMENTED_AND_USED`
 
-### Low-severity (code hygiene)
+#### Gaps / risks
 
-#### Files with top-level `#![allow(dead_code)]` suppressors
-These files have module-wide suppression, meaning any dead item is silently ignored by the compiler:
+- `render_delay_distribution` is implemented but never called from `ExperimentRunner` or any CLI command. The delay distribution is computed (`per_event_delays` in `SyntheticEvalArtifact`) but not plotted.
+- All four `render_*` functions are gated with `#[cfg(not(test))]`, meaning they are never compiled in tests. No test can validate that a valid plot is produced.
+- `AggregateReporter::generate_comparison_table` reads the legacy `results/evaluation_summary.json` path first; the fallback to `summary.json` was only added as a bug fix during the verification pass.
 
-| File | Suppressor |
-|------|-----------|
-| `src/experiments/runner.rs` | `#![allow(dead_code)]` |
-| `src/experiments/search.rs` | `#![allow(dead_code)]` |
-| `src/experiments/batch.rs` | `#![allow(dead_code)]` |
-| `src/calibration/mapping.rs` | `#![allow(dead_code)]` |
-| `src/reporting/report.rs` | `#![allow(dead_code)]` |
-| `src/reporting/artifact.rs` | `#![allow(dead_code)]` |
-| `src/reporting/export/schema.rs` | `#![allow(dead_code)]` |
-| `src/benchmark/matching.rs` | `#![allow(dead_code)]` |
-| `src/benchmark/metrics.rs` | `#![allow(dead_code)]` |
-| `src/benchmark/truth.rs` | `#![allow(dead_code)]` |
-| `src/benchmark/result.rs` | `#![allow(dead_code)]` |
-| `src/data/meta.rs` | `#![allow(dead_code)]` |
-| `src/data/mod.rs` | `#![allow(unused_imports, dead_code)]` |
-| `src/data/session.rs` | `#![allow(dead_code)]` |
-| `src/data/split.rs` | `#![allow(dead_code)]` |
-| `src/data/validation.rs` | `#![allow(dead_code)]` |
-| `src/detector/frozen.rs` | `#![allow(dead_code)]` |
-| `src/detector/mod.rs` | `#![allow(unused_imports, dead_code)]` |
-| `src/detector/posterior_transition.rs` | `#![allow(dead_code)]` |
-| `src/calibration/summary.rs` | `#![allow(dead_code)]` |
-| `src/calibration/report.rs` | `#![allow(dead_code)]` |
-| `src/features/family.rs` | `#![allow(dead_code)]` |
+#### Thesis note
+
+The reporting system is the bridge between the computation and the thesis document. Emphasize that all three table formats (Markdown for README inspection, CSV for spreadsheet import, LaTeX for direct thesis inclusion) are produced identically from the same `MetricsTableBuilder`. The PNG plots are produced with a fixed 1200×600 pixel format using the `plotters` crate.
 
 ---
 
-## 23. Documentation Gaps
+### 4.18 CLI / Interactive Application Layer
 
-| Area | Gap | Priority |
-|------|-----|----------|
-| `StreamingSession<D>` | No explanation of why it is bypassed by the runner | Medium |
-| `log_predictive` in `FilterResult` | Sign convention not documented | Medium |
-| `coherence_score` formula in Route B | No docstring or mathematical reference | Medium |
-| `build_synthetic_params()` | Parameters are not justified against calibration workflow | Medium |
-| `TrainingMode::LoadFrozen` | No documentation that backend implementation is missing | Medium |
-| `run_calibration_workflow()` | Output written to `./runs/calibration/<id>/` but path not documented in the workflow docstring | Low |
-| All plot input structs | No docstrings explaining coordinate conventions | Low |
+#### Theoretical object
 
----
+Operational access to the full system: `cargo run` interactive mode, direct subcommand mode, shared service layer.
 
-## 24. Test Coverage Gaps
+#### Code locations
 
-| Component | Gap | Priority |
-|-----------|-----|----------|
-| Route A (real_eval) | No end-to-end test with real proxy event fixture | High |
-| `DataService::refresh()` | No test against network or mock HTTP | Medium |
-| `AlphaVantageClient` | No test — deleted `new()` / `with_base_url()` means test construction path is unclear | Medium |
-| `StreamingSession<D>` | Only tested indirectly; no direct session-level test | Medium |
-| `TrainingMode::LoadFrozen` | Not tested in any backend | Medium |
-| `PosteriorTransitionTV` | No end-to-end experiment test | Medium |
-| `AggregateReporter` | No test for `generate_comparison_table()` | Low |
-| `is_direct_command()` | No unit test | Low |
-| Plot rendering | No integration test (by design; `#[cfg(not(test))]`) | Low |
-| `init_params_from_obs()` duplicate | Only one copy exercised per test run | Low |
+- `src/main.rs` — entry point, `is_direct_command()`
+- `src/cli/mod.rs` — all CLI logic
 
----
+#### Key types / functions
 
-## 25. Thesis Chapter Mapping
+- `is_direct_command(s: &str) -> bool` — guards for 13 known subcommands
+- `cli::run(cfg: Config)` — interactive `inquire` menu loop
+- `cli::run_direct(args: Vec<String>)` — direct dispatch
+- Direct subcommands: `e2e`, `run-experiment`, `run-batch`, `run-real`, `calibrate`, `compare-runs`, `optimize`, `inspect`, `status`, `help`, `generate-report`, `param-search`
 
-| Thesis chapter | Theory IDs | Primary source files |
-|----------------|------------|---------------------|
-| Ch. 2 — Background: HMM and regime-switching | T3, T4 | model/params.rs, model/emission.rs |
-| Ch. 3 — Inference algorithms | T6, T7, T8, T9 | model/filter.rs, smoother.rs, pairwise.rs, em.rs |
-| Ch. 3.5 — Diagnostics and trust layer | T10 | model/diagnostics.rs |
-| Ch. 3.6 — Online deployment | T11 | online/mod.rs, detector/frozen.rs |
-| Ch. 4 — Detector design | T12 | detector/*.rs |
-| Ch. 4.5 — Synthetic simulation | T5 | model/simulate.rs |
-| Ch. 4.6 — Calibration methodology | T15 | calibration/*.rs |
-| Ch. 5 — Experiments: synthetic benchmark | T13, T2, T5 | benchmark/*.rs, features/*.rs |
-| Ch. 5 — Experiments: real data | T1, T2, T14 | data/*.rs, real_eval/*.rs |
-| Ch. 6 — Implementation and reproducibility | T16, T17, T18 | experiments/*.rs, reporting/*.rs, cli/mod.rs |
-| Appendix A — Feature engineering | T2 | features/*.rs |
-| Appendix B — Data pipeline | T1 | alphavantage/*.rs, cache/mod.rs, data_service/mod.rs |
+#### E2E reachability
+
+All 13 subcommands confirmed reachable. Interactive mode also covers data ingestion, experiment menu, and inspect-runs.
+
+#### Status
+
+`IMPLEMENTED_AND_USED`
+
+#### Gaps / risks
+
+- `optimize` subcommand uses `optimize_full()` from `search.rs` which calls `RealBackend` with the CLI-supplied `--cache` flag. The optimization is CPU-intensive and takes minutes for a full 1280-point grid — there is no progress bar or time estimate (a warning is now emitted in debug mode).
+- The interactive menu's "Run from Registry" path uses `DryRunBackend` which produces empty artifacts. This is a UX mismatch: a user expects real results but gets a dry run without an obvious warning.
 
 ---
 
-## 26. Final Action List
+## 5. Dead Code / Duplicate Implementation Risks
 
-### Critical (must fix before thesis submission)
+| Risk | Location | Why it matters | Suggested action |
+|------|----------|----------------|------------------|
+| `#[allow(dead_code)]` on `posterior_transition.rs` | `src/detector/posterior_transition.rs` line 1 | Detector IS now wired, but the attribute remains. Creates false impression of unused code. | Remove attribute after confirming CI is clean. |
+| `#[allow(dead_code, unused_imports)]` on `surprise.rs` | `src/detector/surprise.rs` line 1 | Same issue — detector is wired. | Remove attribute. |
+| `#[allow(dead_code)]` on `frozen.rs` | `src/detector/frozen.rs` line 1 | `FrozenModel` is used. | Remove attribute. |
+| `render_delay_distribution` never called | `src/reporting/plot/delay_distribution.rs` | Delay data is computed but the histogram plot is never generated | Wire into `RunReporter` for synthetic runs, or remove. |
+| `log_likelihood_contributions()` unused | `src/model/likelihood.rs` | Provides per-time contributions but is never called by any production path | Use in diagnostics or plotting; otherwise mark as dead code explicitly. |
+| `src/model/validation.rs` — unclear purpose | `src/model/validation.rs` | May duplicate `ModelParams::validate()`; exact content not fully inspected | Audit; remove if redundant. |
+| DryRunBackend as default in interactive menu | `src/cli/mod.rs` — `ExperimentsAction::RunFromRegistry` | User expects real computation but gets empty artifacts | Add prominent dry-run warning or replace with real backend for single experiments. |
+| `run_batch` always uses DryRunBackend | `src/experiments/batch.rs` | No real batch computation path exists despite command being advertised | Document limitation clearly; add real-backend batch support or update help text. |
 
-1. **Fix JumpContamination gap** — either implement jump injection in `model/simulate.rs` or remove `JumpContamination` from `calibration/mapping.rs` and document it as future work. The current state is misleading.
+---
 
-2. **Create proxy event fixture files** — without at least one fixture file per real experiment, Route A metrics are permanently zero and the real-data evaluation is incomplete. Minimum: commit `data/events/real_spy_daily_hard_switch.json` and `data/events/real_wti_daily_surprise.json`.
+## 6. Documentation Gaps Audit
 
-3. **Remove `init_params_from_obs()` duplicate** — consolidate to one copy in `shared.rs`; delete from `synthetic_backend.rs`. Add a test that both backends produce the same init params for the same input.
+| Theory component | Implemented? | Documented? | Doc path | Gap |
+|-----------------|--------------|-------------|----------|-----|
+| Data pipeline | Yes | Yes | `docs/data_pipeline.md` | No function-name cross-references; needs update for RTH filter |
+| Feature engineering | Yes | Yes | `docs/observation_design.md` | All 5 families documented; session-aware variants not described |
+| Model parameterization | Yes | Partial | `docs/` (implicit in filter doc) | No dedicated params doc; `validation.rs` undocumented |
+| Gaussian emission | Yes | Yes | `docs/emission_model.md` | Good coverage |
+| Synthetic generator | Yes | Yes | `docs/gaussian_msm_simulator.md` | Jump contamination documented |
+| Forward filter | Yes | Yes | `docs/forward_filter.md`, `docs/filter_validation.md` | Excellent coverage; log-sum-exp documented |
+| Backward smoother | Yes | Yes | `docs/backward_smoother.md` | Good coverage |
+| Pairwise posteriors | Yes | Yes | `docs/pairwise_posteriors.md` | Good coverage |
+| EM estimation | Yes | Yes | `docs/em_estimation.md` | Good coverage; var floor documented |
+| Diagnostics | Yes | Yes | `docs/diagnostics.md` | Good coverage |
+| Online filter | Yes | Yes | `docs/online_inference.md` | Causal boundary documented |
+| Detector family | Yes | Yes | `docs/changepoint_detectors.md` | PosteriorTransition TV variant underdocumented |
+| Frozen model | Yes | Yes | `docs/fixed_parameter_policy.md` | Good coverage |
+| Synthetic benchmark | Yes | Yes | `docs/benchmark_protocol.md` | Greedy matching documented |
+| Real-data evaluation | Yes | Yes | `docs/real_data_evaluation.md` | Route A/B documented; coherence formula not shown |
+| Calibration | Yes | Yes | `docs/synthetic_to_real_calibration.md` | p_jj = 1 - 1/d_j documented |
+| Experiment runner | Yes | Yes | `docs/experiment_runner.md` | Good coverage |
+| Reporting/plotting | Yes | Yes | `docs/reporting_and_export.md` | delay_distribution gap not noted |
+| CLI / interactive | Yes | Yes | `docs/interactive_cli.md` | DryRunBackend risk undocumented |
+| `docs/thesis/` directory | — | No | — | **No thesis-oriented docs existed before this audit** |
 
-### Important (fix before experiments chapter is written)
+---
 
-4. **Register a `PosteriorTransitionTV` experiment** — add it to `registry.rs` so all detector variants have at least one registered experiment and end-to-end test.
+## 7. Test Coverage Audit
 
-5. **Implement `TrainingMode::LoadFrozen` in `SyntheticBackend` and `RealBackend`** — or add a runtime `anyhow::bail!` with a clear error message, and document the gap.
+| Component | Tests found | Missing tests | Risk |
+|-----------|-------------|---------------|------|
+| Forward filter (`filter.rs`) | 11 dedicated tests; normalization, analytical checks, log-likelihood, extreme observations | Online vs. offline consistency test | Low |
+| Backward smoother (`smoother.rs`) | Indirect via EM | Dedicated normalization test ($\sum_j \gamma_t(j) = 1$) | Medium |
+| Pairwise posteriors (`pairwise.rs`) | Indirect via EM | Marginal consistency test ($\sum_j \xi_t(i,j) = \gamma_{t-1}(i)$) | Medium |
+| EM estimation (`em.rs`) | Convergence, monotonicity, M-step correctness, var floor | Multi-start vs single-start comparison test | Low |
+| Diagnostics (`diagnostics.rs`) | Warning generation tests | `is_trustworthy` boundary condition tests | Low |
+| Online filter (`online/mod.rs`) | Normalization of step outputs | **Consistency with offline filter on same sequence** | High |
+| HardSwitch detector | Regime-flip alarm test | Persistence + cooldown integration | Medium |
+| PosteriorTransition detector | Score computation tests | LeavePrevious vs TV comparison | Low |
+| Surprise detector | Score + EMA baseline tests | EMA correctness after fix (ema_alpha=0.3) | Low |
+| Event matching (`matching.rs`) | Greedy protocol tests | Edge case: alarm at exactly τ (delay=0) | Low |
+| Metric suite (`metrics.rs`) | Precision/recall/FAR/delay tests | FAR normalization for very short streams | Low |
+| Feature transforms (`transform.rs`) | Unit tests for log/abs/squared return | Session-boundary return should be None | Medium |
+| Feature rolling (`rolling.rs`) | Rolling vol unit tests | Session-reset correctness test | Medium |
+| Feature scaler (`scaler.rs`) | Fit/apply tests | Scaler never fits on test data (anti-leakage) | High |
+| Data split (`split.rs`) | Partition boundary tests | No-overlap invariant across all three partitions | Medium |
+| Data session (`session.rs`) | RTH filter tests | Boundary conditions (09:30:00 exactly, 15:59:59) | Low |
+| Calibration mapping (`mapping.rs`) | Mapping output tests | p_jj = 1 - 1/d_j formula verification | Medium |
+| Reporting tables | Builder tests | LaTeX escaping of special characters | Low |
+| Report plots | Not tested (`#[cfg(not(test))]`) | Valid PNG output; correct axis range | Medium |
 
-6. **Expose `AggregateReporter` from CLI** — add a `compare-runs` direct subcommand; the comparison table is needed for the thesis parameter search results.
+---
 
-7. **Set `em_n_starts: 3` in at least one registered experiment** — exercises multi-start EM and produces `multi_start_summary.json` artifact.
+## 8. Thesis Chapter Mapping
 
-8. **Document `log_predictive` sign convention** in `FilterResult` — clarify whether it is $\ln c_t$ (positive, log-probability) or $-\ln c_t$ (positive, surprise). `SurpriseDetector` currently negates it; confirm this is correct.
+| Thesis chapter | Theory components | Code evidence | Missing material |
+|----------------|-------------------|---------------|------------------|
+| **Data and observation design** | Real financial time series; daily/intraday; session handling; chronological splits; leakage prevention; feature families (5 variants) | `src/data/`, `src/features/`, `CleanSeries`, `FeatureStream::build`, `filter_rth`, `PartitionedSeries` | Explicit anti-leakage theorem (scaler fit on train only); formal session-boundary definition for intraday |
+| **Markov Switching Model theory** | Hidden regimes; initial distribution; transition matrix; Gaussian emission; model constraints | `src/model/params.rs` `ModelParams`, `src/model/emission.rs` `Emission` | Formal likelihood factorization derivation; identifiability discussion |
+| **Estimation and diagnostics** | Forward filter (Hamilton); backward smoother (Baum); pairwise posteriors; EM (Baum-Welch); diagnostics; expected duration | `src/model/filter.rs`, `src/model/smoother.rs`, `src/model/pairwise.rs`, `src/model/em.rs`, `src/model/diagnostics.rs` | EM convergence proof; initial-parameter sensitivity analysis |
+| **Online changepoint detector** | Frozen model; online streaming filter; three detector variants; PersistencePolicy | `src/online/mod.rs`, `src/detector/`, `src/detector/frozen.rs` | Theoretical comparison of three detectors; formal causal guarantee proof |
+| **Synthetic calibration** | Empirical summary extraction; mapping K; p_jj = 1 - 1/d_j | `src/calibration/` | Full calibration table (empirical targets → synthetic params for each registered experiment) |
+| **Evaluation methodology** | Ground-truth evaluation (precision/recall/delay/FAR/miss rate); causal matching; real-data Route A + B | `src/benchmark/`, `src/real_eval/` | Justification of window width w=10; Route B coherence formula; proxy event table for each asset |
+| **System implementation** | Experiment runner; CLI; artifact system; reproducibility | `src/experiments/`, `src/cli/mod.rs`, `src/reporting/` | Architecture diagram; config schema reference |
+| **Experimental results** | All 12 registered experiments; synthetic benchmark metrics; real evaluation metrics; joint optimization | Run directories in `runs/`; `search_report.json`; `search_summary.txt` | Comparison table across all experiments; sensitivity to k_regimes and feature family choice |
 
-### Good practice (improve before final review)
+---
 
-9. **Audit and remove `#![allow(dead_code)]` suppressors** module by module — use `#[cfg_attr(not(test), allow(dead_code))]` on individual items where appropriate, or add tests / CLI paths.
+## 9. Final Action List
 
-10. **Add docstring for `coherence_score`** in `route_b.rs` with the formula and normalisation convention.
+### Critical before thesis writing
 
-11. **Add docstring to `build_synthetic_params()`** explaining the relationship (and disconnect) from `run_calibration_workflow()`.
+| Priority | Action | Location | Reason |
+|----------|--------|----------|--------|
+| 1 | **Add online/offline filter consistency test** | `src/online/mod.rs` or a new integration test | Without this, the online detector could silently diverge from the offline filter with no detection |
+| 2 | **Add scaler anti-leakage test** | `src/features/scaler.rs` or integration tests | The central reproducibility claim depends on train-only scaling; no test currently enforces it |
+| 3 | **Document Route B coherence formula** | `docs/real_data_evaluation.md` | The thesis must state the exact formula; currently only implemented in code |
+| 4 | **Write proxy event table for each real experiment** | Thesis appendix + `docs/thesis/` | Route A results are meaningless without knowing which proxy events were used |
+| 5 | **Remove `#[allow(dead_code)]` from wired detectors** | `src/detector/posterior_transition.rs`, `surprise.rs`, `frozen.rs` | These attributes suppress legitimate future warnings |
 
-12. **Add test for `is_direct_command()`** to prevent the help text and dispatch logic from drifting apart.
+### Important but not blocking
 
-13. **Implement `AlphaVantageClient` mock/test harness** so `DataService::refresh()` can be tested without a live API key.
+| Priority | Action | Location | Reason |
+|----------|--------|----------|--------|
+| 6 | **Add smoother normalization test** ($\sum_j \gamma_t(j) = 1$) | `src/model/smoother.rs` | E-step correctness depends on this; currently only tested indirectly |
+| 7 | **Add pairwise marginal consistency test** ($\sum_j \xi_t(i,j) = \gamma_{t-1}(i)$) | `src/model/pairwise.rs` | Core EM correctness invariant |
+| 8 | **Wire `render_delay_distribution` into RunReporter** | `src/reporting/report.rs` | Delay distribution is informative for thesis; data is computed but plot is never generated |
+| 9 | **Audit `src/model/validation.rs`** | `src/model/validation.rs` | Potential dead code / duplicate of `ModelParams::validate()` |
+| 10 | **Document the 12-experiment registry in thesis** | `docs/thesis/` | Currently only visible via `--help` or source inspection |
+| 11 | **Add K≥3 synthetic scenario** | `src/experiments/registry.rs` | The joint optimizer found K=3 best for real SPY data, but no K=3 synthetic benchmark exists |
+| 12 | **Add DryRunBackend warning to interactive menu** | `src/cli/mod.rs` | Users running experiments interactively expect real results |
+| 13 | **Create dedicated `docs/thesis/` chapter notes** | `docs/thesis/` | This audit document should be the first of several; add one `.md` per thesis chapter |
 
-14. **Consider refactoring `run_online_shared()` to use `StreamingSession<D>`** — closes the gap between the public API design and the actual runtime path.
+---
+
+*End of code-to-theory repository audit — verify_2026_05_03*

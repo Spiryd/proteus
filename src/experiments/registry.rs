@@ -69,6 +69,30 @@ pub fn registry() -> Vec<RegisteredExperiment> {
                 "HardSwitch (shock_contaminated) — 2-regime synthetic with jump contamination",
             build: hard_switch_shock,
         },
+        RegisteredExperiment {
+            id: "hard_switch_frozen",
+            description:
+                "HardSwitch (LoadFrozen) — loads pre-fitted model from data/frozen_models/hard_switch_frozen",
+            build: hard_switch_frozen,
+        },
+        RegisteredExperiment {
+            id: "hard_switch_multi_start",
+            description:
+                "HardSwitch (multi-start EM, n_starts=3) — exercises multi_start_summary.json artifact",
+            build: hard_switch_multi_start,
+        },
+        RegisteredExperiment {
+            id: "surprise_ema",
+            description:
+                "Surprise EMA — 2-regime synthetic, Surprise detector with ema_alpha=0.3 slow baseline",
+            build: surprise_ema,
+        },
+        RegisteredExperiment {
+            id: "squared_return_surprise",
+            description:
+                "SquaredReturn — 2-regime synthetic, Surprise detector on squared-return feature",
+            build: squared_return_surprise,
+        },
     ]
 }
 
@@ -192,6 +216,40 @@ pub fn hard_switch_shock() -> ExperimentConfig {
         horizon: 2000,
         dataset_id: None,
     };
+    cfg.detector = DetectorConfig {
+        detector_type: DetectorType::HardSwitch,
+        threshold: 0.5,
+        persistence_required: 2,
+        cooldown: 5,
+        ema_alpha: None,
+    };
+    cfg
+}
+
+pub fn hard_switch_frozen() -> ExperimentConfig {
+    let mut cfg = base(
+        "hard_switch_frozen",
+        "HardSwitch detector — loads pre-fitted model from data/frozen_models/hard_switch_frozen",
+    );
+    cfg.model.training = TrainingMode::LoadFrozen {
+        artifact_id: "data/frozen_models/hard_switch_frozen".to_string(),
+    };
+    cfg.detector = DetectorConfig {
+        detector_type: DetectorType::HardSwitch,
+        threshold: 0.5,
+        persistence_required: 2,
+        cooldown: 5,
+        ema_alpha: None,
+    };
+    cfg
+}
+
+pub fn hard_switch_multi_start() -> ExperimentConfig {
+    let mut cfg = base(
+        "hard_switch_multi_start",
+        "HardSwitch detector — multi-start EM (3 starts), exercises multi_start_summary.json",
+    );
+    cfg.model.em_n_starts = 3;
     cfg.detector = DetectorConfig {
         detector_type: DetectorType::HardSwitch,
         threshold: 0.5,
@@ -378,6 +436,61 @@ pub fn real_spy_intraday_hard_switch() -> ExperimentConfig {
             record_git_info: false,
         },
     }
+}
+
+// ---------------------------------------------------------------------------
+// Additional experiments exercising implemented-but-unregistered features
+// ---------------------------------------------------------------------------
+
+/// `SurpriseDetector` with EMA baseline smoothing (`ema_alpha = 0.95`).
+///
+/// This exercises the exponential-moving-average score variant of the Surprise
+/// detector (see `docs/changepoint_detectors.md`).  All other settings match
+/// the `surprise` baseline experiment so results are directly comparable.
+pub fn surprise_ema() -> ExperimentConfig {
+    let mut cfg = base(
+        "surprise_ema",
+        "Surprise EMA — Surprise detector with ema_alpha=0.3 slow-moving baseline",
+    );
+    cfg.detector = DetectorConfig {
+        detector_type: DetectorType::Surprise,
+        threshold: 2.5,
+        persistence_required: 2,
+        cooldown: 5,
+        // ema_alpha drives a *deviation-from-baseline* score: raw - EMA(raw).
+        // A small alpha (slow baseline) keeps the baseline near the long-run
+        // mean so that sudden spikes produce large positive deviations.
+        // alpha=0.95 would make the baseline track the current value almost
+        // instantly, flattening all deviations to ~0.  Use 0.3 instead.
+        ema_alpha: Some(0.3),
+    };
+    cfg
+}
+
+/// Synthetic experiment using `SquaredReturn` as the observed feature.
+///
+/// `SquaredReturn` is the squared log-return $r_t^2$, a classical second-moment
+/// volatility proxy.  This experiment exercises the `SquaredReturn` code path
+/// end-to-end and produces results comparable with the `LogReturn`-based
+/// `hard_switch` and `surprise` baselines.
+pub fn squared_return_surprise() -> ExperimentConfig {
+    let mut cfg = base(
+        "squared_return_surprise",
+        "SquaredReturn feature — Surprise detector on squared log-returns",
+    );
+    cfg.features = FeatureConfig {
+        family: FeatureFamilyConfig::SquaredReturn,
+        scaling: ScalingPolicyConfig::ZScore,
+        session_aware: false,
+    };
+    cfg.detector = DetectorConfig {
+        detector_type: DetectorType::Surprise,
+        threshold: 2.5,
+        persistence_required: 2,
+        cooldown: 5,
+        ema_alpha: None,
+    };
+    cfg
 }
 
 #[cfg(test)]

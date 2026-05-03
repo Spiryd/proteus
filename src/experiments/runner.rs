@@ -6,6 +6,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use super::artifact::{prepare_run_dir, snapshot_config, snapshot_result, write_json_file};
 use super::config::{DataConfig, EvaluationConfig, ExperimentConfig, ExperimentMode, TrainingMode};
+use crate::reporting::{RunArtifactLayout, RunReporter};
 use super::result::{
     ArtifactRef, DetectorSummary, EvaluationSummary, ExperimentResult, FittedParamsSummary,
     ModelSummary, RunMetadata, RunStage, RunStatus, StageTiming,
@@ -533,6 +534,7 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
             warnings: vec![],
             score_trace,
             regime_posteriors,
+            n_feature_obs: Some(features.n_observations),
         };
 
         let export_t0 = Instant::now();
@@ -597,6 +599,15 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
                     path: fit_path.to_string_lossy().to_string(),
                     kind: "json".to_string(),
                 });
+            }
+        }
+
+        // Generate metrics tables (metrics.md / metrics.csv / metrics.tex).
+        if cfg.output.write_json {
+            let layout = RunArtifactLayout { run_id: run_id.clone(), root: run_dir.clone() };
+            let reporter = RunReporter::new(layout);
+            if let Err(e) = reporter.generate_tables(&result) {
+                warnings.push(format!("generate_tables failed: {e}"));
             }
         }
 
@@ -955,6 +966,7 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
             warnings: vec![],
             score_trace: vec![],
             regime_posteriors: vec![],
+            n_feature_obs: None,
         }
     }
 
@@ -992,6 +1004,7 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
             warnings: vec![message],
             score_trace: vec![],
             regime_posteriors: vec![],
+            n_feature_obs: None,
         };
 
         if cfg.output.write_json

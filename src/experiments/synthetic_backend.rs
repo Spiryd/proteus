@@ -59,11 +59,8 @@ impl ExperimentBackend for SyntheticBackend {
                 let params = build_synthetic_params(scenario_id, cfg.model.k_regimes)?;
                 let sim = simulate(params, horizon, &mut rng)?;
 
-                // Derive changepoints: positions (1-based) where regime changed.
-                let changepoints: Vec<usize> = (1..sim.states.len())
-                    .filter(|&i| sim.states[i] != sim.states[i - 1])
-                    .map(|i| i + 1) // 1-based
-                    .collect();
+                // Derive changepoints from the simulated hidden-state path.
+                let changepoints = sim.changepoints();
 
                 let train_n = (horizon as f64 * 0.70) as usize;
 

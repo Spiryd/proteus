@@ -92,6 +92,7 @@ cargo run -- calibrate       --id <experiment_id> [--out <dir>]
 cargo run -- param-search    --id <experiment_id>         # grid search (DryRun)
 cargo run -- optimize        --id <experiment_id> [--cache <path>] [--save <dir>] [--top <n>]
 cargo run -- inspect         --dir ./runs/real/my_run/run_001
+cargo run -- generate-report --dir ./runs/real/my_run/run_001 [--cache <path.duckdb>]
 cargo run -- status          [--config path/to/config.toml]
 cargo run -- help
 ```
@@ -107,6 +108,33 @@ cargo run -- run-real --id real_spy_daily_hard_switch --cache data/commodities.d
 ```
 
 Artifacts (20 files, including plots) are written to `runs/real/<id>/<run_id>/` and optionally copied to `--save`.
+
+For intraday experiments, the pipeline automatically applies a **Regular Trading Hours (RTH) filter** that retains only bars in the 09:30–15:59 ET window, excluding pre-market and after-hours bars.
+
+#### `generate-report`
+
+Regenerates all plots and JSON artifacts for an existing run by replaying the experiment from its `config.snapshot.json`:
+
+```
+cargo run -- generate-report --dir ./runs/real/my_run/run_001
+cargo run -- generate-report --dir ./runs/real/my_run/run_001 --cache data/commodities.duckdb
+```
+
+The command re-runs the full pipeline (including EM fitting) and writes a fresh artifact set with a new `run_id`. No files from the original run are overwritten.
+
+#### `run-batch`
+
+> **WARNING:** `run-batch` uses `DryRunBackend` — no real data is loaded. All
+> metrics (alarms, coverage, precision) are synthetic mock values. For real-data
+> experiments use `run-real --id <id>` instead.
+
+Runs a list of JSON experiment configs in sequence:
+
+```
+cargo run -- run-batch --config a.json --config b.json --save ./batch_out
+```
+
+Writes `batch_summary.json` with per-run status and mock metrics.
 
 #### `calibrate`
 
@@ -307,16 +335,20 @@ runs/
 
 ### Registered Experiments
 
-Six experiments are registered in `src/experiments/registry.rs`:
+Ten experiments are registered in `src/experiments/registry.rs`:
 
 | ID | Type | Description |
 |----|------|-------------|
 | `hard_switch` | Synthetic | HardSwitch, 2-regime, LogReturn/ZScore, horizon 2000 |
 | `posterior_transition` | Synthetic | PosteriorTransition, 2-regime, LogReturn/ZScore, horizon 2000 |
 | `surprise` | Synthetic | Surprise, 2-regime, LogReturn/ZScore, horizon 2000 |
+| `posterior_transition_tv` | Synthetic | PosteriorTransitionTV, 2-regime, LogReturn/ZScore, horizon 2000 |
+| `hard_switch_shock` | Synthetic | HardSwitch, shock-contaminated synthetic (jump noise path) |
+| `hard_switch_frozen` | Synthetic | HardSwitch, loads pre-fitted model from `data/frozen_models/hard_switch_frozen` |
+| `hard_switch_multi_start` | Synthetic | HardSwitch, multi-start EM (3 starts) — produces `multi_start_summary.json` |
 | `real_spy_daily_hard_switch` | Real | SPY daily adj-close log-returns, HardSwitch, 2018–present |
 | `real_wti_daily_surprise` | Real | WTI daily spot-price log-returns, Surprise, 2018–present |
-| `real_spy_intraday_hard_switch` | Real | SPY 15-min log-returns (session-aware), HardSwitch, 2022–2025 |
+| `real_spy_intraday_hard_switch` | Real | SPY 15-min RTH log-returns (session-aware), HardSwitch, 2022–2025 |
 
 The three synthetic experiments can all be run at once:
 

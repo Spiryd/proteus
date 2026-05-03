@@ -15,5 +15,5 @@ duckdb = { version = "1.10502.0", features = ["bundled", "chrono"] }
 inquire = "0.9"
 rand = "0.10"
 rand_distr = "0.6"
-plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "line_series", "histogram", "ab_glyph", "candlestick"] }
+plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "line_series", "histogram", "ab_glyph", "candlestick", "chrono"] }
 csv = "1.3"

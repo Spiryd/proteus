@@ -656,4 +656,170 @@ mod tests {
             }
         }
     }
+
+    // ------------------------------------------------------------------
+    // Isolated M-step closed-form update tests
+    // ------------------------------------------------------------------
+
+    /// Given a synthetic E-step bundle with known values, verify that the
+    /// M-step closed-form updates for π, P, μ, and σ² produce the
+    /// mathematically expected results.
+    ///
+    /// Scenario: K=2, T=2 observations.
+    ///   smoothed = [[0.8, 0.2],   // t=0: 80 % regime 0
+    ///               [0.3, 0.7]]   // t=1: 70 % regime 1
+    ///   expected_transitions =
+    ///       [[0.24, 0.56],   // N_00=0.24, N_01=0.56
+    ///        [0.06, 0.14]]   // N_10=0.06, N_11=0.14
+    ///   obs = [1.0, 2.0]
+    ///
+    /// Expected M-step outputs (by hand):
+    ///   π = smoothed[0] = [0.8, 0.2]
+    ///
+    ///   M_0 = smoothed[0][0] = 0.8,  M_1 = smoothed[0][1] = 0.2
+    ///   (only t=0 contributes because T-1=1 step for the denominator)
+    ///   P[0][0] = N_00 / M_0 = 0.24 / 0.8 = 0.30
+    ///   P[0][1] = N_01 / M_0 = 0.56 / 0.8 = 0.70
+    ///   P[1][0] = N_10 / M_1 = 0.06 / 0.2 = 0.30
+    ///   P[1][1] = N_11 / M_1 = 0.14 / 0.2 = 0.70
+    ///
+    ///   W_0 = 0.8 + 0.3 = 1.1,  W_1 = 0.2 + 0.7 = 0.9
+    ///   μ_0 = (0.8*1.0 + 0.3*2.0) / 1.1 = 1.4 / 1.1 ≈ 1.2727...
+    ///   μ_1 = (0.2*1.0 + 0.7*2.0) / 0.9 = 1.6 / 0.9 ≈ 1.7778...
+    ///
+    ///   σ²_0 = (0.8*(1.0-μ_0)² + 0.3*(2.0-μ_0)²) / 1.1
+    ///        = (0.8*0.0744... + 0.3*0.5289...) / 1.1 ≈ 0.1983...
+    ///   σ²_1 = (0.2*(1.0-μ_1)² + 0.7*(2.0-μ_1)²) / 0.9
+    ///        = (0.2*0.6049... + 0.7*0.0494...) / 0.9 ≈ 0.1975...
+    #[test]
+    fn m_step_closed_form_k2_t2() {
+        // Construct the synthetic E-step bundle directly.
+        let e = EStepResult {
+            smoothed: vec![vec![0.8, 0.2], vec![0.3, 0.7]],
+            expected_transitions: vec![vec![0.24, 0.56], vec![0.06, 0.14]],
+            log_likelihood: -1.0, // value irrelevant for M-step
+        };
+        let obs = vec![1.0, 2.0_f64];
+
+        // Initial parameters — only used as fallback for degenerate rows.
+        let current = ModelParams::new(
+            vec![0.5, 0.5],
+            vec![vec![0.9, 0.1], vec![0.1, 0.9]],
+            vec![0.0, 1.0],
+            vec![1.0, 1.0],
+        );
+        let var_floor = 1e-6;
+
+        let updated = m_step(&e, &obs, &current, var_floor).unwrap();
+
+        let eps = 1e-9;
+
+        // π (initial distribution) = smoothed[0].
+        assert!((updated.pi[0] - 0.8).abs() < eps, "π_0={}", updated.pi[0]);
+        assert!((updated.pi[1] - 0.2).abs() < eps, "π_1={}", updated.pi[1]);
+
+        // Transition matrix rows.
+        let p = &updated.transition;
+        // Row 0: M_0 = 0.8
+        assert!((p[0] - 0.30).abs() < eps, "P[0][0]={}", p[0]);
+        assert!((p[1] - 0.70).abs() < eps, "P[0][1]={}", p[1]);
+        // Row 1: M_1 = 0.2
+        assert!((p[2] - 0.30).abs() < eps, "P[1][0]={}", p[2]);
+        assert!((p[3] - 0.70).abs() < eps, "P[1][1]={}", p[3]);
+
+        // Means.
+        let mu0_exp = 1.4_f64 / 1.1;
+        let mu1_exp = 1.6_f64 / 0.9;
+        assert!(
+            (updated.means[0] - mu0_exp).abs() < 1e-10,
+            "μ_0={} expected {}",
+            updated.means[0],
+            mu0_exp
+        );
+        assert!(
+            (updated.means[1] - mu1_exp).abs() < 1e-10,
+            "μ_1={} expected {}",
+            updated.means[1],
+            mu1_exp
+        );
+
+        // Variances: σ²_j = Σ_t γ_t(j)*(y_t - μ_j)² / W_j.
+        let var0_exp = (0.8 * (1.0 - mu0_exp).powi(2) + 0.3 * (2.0 - mu0_exp).powi(2)) / 1.1;
+        let var1_exp = (0.2 * (1.0 - mu1_exp).powi(2) + 0.7 * (2.0 - mu1_exp).powi(2)) / 0.9;
+        assert!(
+            (updated.variances[0] - var0_exp).abs() < 1e-10,
+            "σ²_0={} expected {}",
+            updated.variances[0],
+            var0_exp
+        );
+        assert!(
+            (updated.variances[1] - var1_exp).abs() < 1e-10,
+            "σ²_1={} expected {}",
+            updated.variances[1],
+            var1_exp
+        );
+    }
+
+    /// Transition row denominator is computed using only t=0..T-2,
+    /// NOT the full smoothed sum (last step is excluded as there is no
+    /// outgoing transition).  Verify with a T=3 sequence.
+    #[test]
+    fn m_step_transition_denom_excludes_last_step() {
+        // T=3, K=2.  All smoothed mass on regime 0 at every step.
+        // expected_transitions has all mass on the 0→0 self-loop.
+        let e = EStepResult {
+            smoothed: vec![vec![1.0, 0.0], vec![1.0, 0.0], vec![1.0, 0.0]],
+            expected_transitions: vec![vec![2.0, 0.0], vec![0.0, 0.0]],
+            log_likelihood: 0.0,
+        };
+        let obs = vec![1.0, 1.0, 1.0];
+        let current = ModelParams::new(
+            vec![0.5, 0.5],
+            vec![vec![0.9, 0.1], vec![0.1, 0.9]],
+            vec![0.0, 1.0],
+            vec![1.0, 1.0],
+        );
+        let updated = m_step(&e, &obs, &current, 1e-6).unwrap();
+
+        // M_0 = sum of smoothed[t][0] for t in 0..T-1 = 0+1+1 = 2 (t=0 and t=1, NOT t=2).
+        // P[0][0] = N_00 / M_0 = 2.0 / 2.0 = 1.0.
+        // Row 1 is degenerate (M_1 ≈ 0) → frozen to current.
+        let p = &updated.transition;
+        assert!((p[0] - 1.0).abs() < 1e-9, "P[0][0]={} expected 1.0", p[0]);
+        assert!((p[1] - 0.0).abs() < 1e-9, "P[0][1]={} expected 0.0", p[1]);
+    }
+
+    /// Degenerate regime (zero posterior weight) should be left frozen —
+    /// no division by zero, no panic, and frozen parameters preserved.
+    #[test]
+    fn m_step_freezes_degenerate_regime() {
+        // K=2, T=2.  All posterior weight on regime 0 — regime 1 is degenerate.
+        let e = EStepResult {
+            smoothed: vec![vec![1.0, 0.0], vec![1.0, 0.0]],
+            expected_transitions: vec![vec![1.0, 0.0], vec![0.0, 0.0]],
+            log_likelihood: 0.0,
+        };
+        let obs = vec![2.0, 3.0];
+        let frozen_mean = 42.0;
+        let frozen_var = 99.0;
+        let current = ModelParams::new(
+            vec![0.5, 0.5],
+            vec![vec![0.9, 0.1], vec![0.1, 0.9]],
+            vec![0.0, frozen_mean],
+            vec![1.0, frozen_var],
+        );
+        let updated = m_step(&e, &obs, &current, 1e-6).unwrap();
+
+        // Regime 1's parameters must remain frozen.
+        assert!(
+            (updated.means[1] - frozen_mean).abs() < 1e-9,
+            "frozen mean changed: {}",
+            updated.means[1]
+        );
+        assert!(
+            (updated.variances[1] - frozen_var).abs() < 1e-9,
+            "frozen variance changed: {}",
+            updated.variances[1]
+        );
+    }
 }
