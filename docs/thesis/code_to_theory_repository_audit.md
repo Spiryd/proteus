@@ -36,7 +36,7 @@ Status legend (used throughout):
 | Surprise detector (with EMA baseline) | IMPLEMENTED_AND_USED | Yes | `surprise`, `surprise_ema`, `squared_return_surprise` | [src/detector/surprise.rs](src/detector/surprise.rs) | Low |
 | Benchmark protocol (truth, matching, metrics) | IMPLEMENTED_AND_USED | Yes (synthetic backend) | `run-experiment`, `run-batch` | [src/benchmark/](src/benchmark/) | Low |
 | Real-data evaluation Route A (proxy events) | IMPLEMENTED_AND_USED | Yes | `run-real` | [src/real_eval/route_a.rs](src/real_eval/route_a.rs) | Low |
-| Real-data evaluation Route B (segmentation) | PARTIAL | Yes — but `RealEvalSummaryRow` aggregator is dead | `run-real` | [src/real_eval/route_b.rs](src/real_eval/route_b.rs), [src/real_eval/report.rs](src/real_eval/report.rs) | Low |
+| Real-data evaluation Route B (segmentation) | IMPLEMENTED_AND_USED | Yes | `run-real` | [src/real_eval/route_b.rs](src/real_eval/route_b.rs), [src/real_eval/report.rs](src/real_eval/report.rs) | Low |
 | Calibration (synthetic ↔ real) | IMPLEMENTED_AND_USED | Yes | `calibrate` | [src/calibration/](src/calibration/) | Low |
 | Experiment runner / backends | IMPLEMENTED_AND_USED | Yes | all | [src/experiments/runner.rs](src/experiments/runner.rs), [src/experiments/synthetic_backend.rs](src/experiments/synthetic_backend.rs), [src/experiments/real_backend.rs](src/experiments/real_backend.rs) | Low |
 | Reporting — JSON/CSV/PNG/MD/TEX (inline) | IMPLEMENTED_AND_USED | Yes | all | [src/reporting/](src/reporting/) | Low |
@@ -95,7 +95,7 @@ Grouped by module; only first-party `src/**/*.rs` files (≈80 files).
 | [src/benchmark/truth.rs](src/benchmark/truth.rs) | Truth vector | `ChangePointTruth` | |
 | [src/real_eval/route_a.rs](src/real_eval/route_a.rs) | Proxy-event alignment | `RouteAConfig`, `ProxyEvent`, `evaluate_route_a` | 6 tests |
 | [src/real_eval/route_b.rs](src/real_eval/route_b.rs) | Segmentation self-consistency | `RouteBConfig`, `ShortSegmentPolicy`, `evaluate_route_b` | 4 tests |
-| [src/real_eval/report.rs](src/real_eval/report.rs) | Glue + JSON | `evaluate_real_data`, `RealEvalResult`, `RealEvalMeta`, `RealEvalSummaryRow` | `RealEvalSummaryRow` unused |
+| [src/real_eval/report.rs](src/real_eval/report.rs) | Glue + JSON | `evaluate_real_data`, `RealEvalResult`, `RealEvalMeta` | |
 | [src/calibration/mapping.rs](src/calibration/mapping.rs) | Empirical → MSM mapping | `MeanPolicy`, `VariancePolicy`, $p_{jj}=1-1/d_j$ | 4 tests |
 | [src/calibration/summary.rs](src/calibration/summary.rs) | Empirical statistics | `EmpiricalCalibrationProfile` | 5 tests |
 | [src/calibration/report.rs](src/calibration/report.rs) | Calibration report | `CalibrationReport` | 2 tests |
@@ -373,8 +373,7 @@ The fixed template per component:
 - **How used.** `RealBackend::evaluate_real` (stage 6′). Driven by `run-real`.
 - **Artifacts.** `signal_alarms.png`, `segmentation.png`, embedded JSON in `result.json`. Proxy events read from `data/proxy_events/{spy,gold,wti}.json`.
 - **Tests.** 6 (Route A) + 4 (Route B) unit tests.
-- **Status.** **PARTIAL** — main path is fully wired and tested; the `RealEvalSummaryRow` aggregator type in `report.rs` has no live caller (cross-asset summary currently produced inline by the runner / `compare-runs`).
-- **Gaps.** Wire `RealEvalSummaryRow` into `compare-runs`, or remove it.
+- **Status.** **IMPLEMENTED_AND_USED**.
 - **Thesis note.** [docs/real_data_evaluation.md](docs/real_data_evaluation.md) covers the design.
 
 ### 4.18 Calibration (synthetic ↔ real)
@@ -413,7 +412,6 @@ For each component, "Used by" lists the concrete call sites; "CLI reachable via"
 | `benchmark::matching` + `benchmark::metrics` + `benchmark::truth` | `SyntheticBackend::evaluate_synthetic` | synthetic experiments, `run-batch` | `metrics.{csv,md,tex}`, `delay_distribution.png` |
 | `real_eval::route_a::evaluate_route_a` | `RealBackend::evaluate_real` | `run-real` | `signal_alarms.png`, `result.json` |
 | `real_eval::route_b::evaluate_route_b` | `RealBackend::evaluate_real` | `run-real` | `segmentation.png`, `result.json` |
-| `real_eval::report::RealEvalSummaryRow` | **no live caller** | n/a | none (dead) |
 | `calibration::*` | `cmd_calibrate_scenario`, `direct_calibrate` | `calibrate` | calibration JSON + frozen model dir |
 | `data::CleanSeries`, `PartitionedSeries`, `validate` | `RealBackend::load_clean_series` | `run-real`, `calibrate` | embedded in `result.json` |
 | `data::session::SessionAwareSeries` | **no live caller** | n/a | none (dead) |
@@ -433,7 +431,6 @@ For each component, "Used by" lists the concrete call sites; "CLI reachable via"
 |---|---|---|---|
 | Typed CSV export module | [src/reporting/export/csv.rs](src/reporting/export/csv.rs) | `#![allow(dead_code)]`; live runner uses inline `csv` calls inside `RunArtifactLayout` | Either wire `RunArtifactLayout` to delegate to this module (consolidates schema in one place) or delete the file. |
 | `RunReporter`, `AggregateReporter` | [src/reporting/report.rs](src/reporting/report.rs) | Public types with no live constructors outside their own tests | Either replace runner export call-sites with `RunReporter`, or delete `report.rs`. |
-| `RealEvalSummaryRow` | [src/real_eval/report.rs](src/real_eval/report.rs) | Defined and serialised in tests, never aggregated by `compare-runs` / `run-batch` | Wire into `cli::direct_compare_runs` aggregator or delete. |
 | `SessionAwareSeries`, `is_rth_bar`, `label_sessions` | [src/data/session.rs](src/data/session.rs) | Module exists with 7 unit tests but no backend constructs `SessionAwareSeries`; intraday SPY currently flows through plain `CleanSeries` + `PartitionedSeries` | **Most important to address:** wire into `RealBackend::load_clean_series` for `Intraday` mode (gates session_reset semantics in `FeatureFamily::RollingVol/StandardizedReturn`), or downgrade thesis claim to "session-naive intraday processing". |
 | `FrozenModel` accessor methods | [src/detector/frozen.rs](src/detector/frozen.rs) | A few read-only accessors only exercised by tests | Cosmetic; safe to leave. |
 
@@ -465,7 +462,7 @@ No genuine duplicates were found (e.g. there is exactly one Hamilton recursion, 
 | Observation design | [docs/observation_design.md](docs/observation_design.md) | Yes | |
 | Online inference | [docs/online_inference.md](docs/online_inference.md) | Yes | |
 | Pairwise posteriors | [docs/pairwise_posteriors.md](docs/pairwise_posteriors.md) | Yes | |
-| Real data evaluation | [docs/real_data_evaluation.md](docs/real_data_evaluation.md) | Yes | should note that `RealEvalSummaryRow` is currently unused. |
+| Real data evaluation | [docs/real_data_evaluation.md](docs/real_data_evaluation.md) | Yes | |
 | Reporting / export | [docs/reporting_and_export.md](docs/reporting_and_export.md) | **Partially** | Should disclose that the typed `csv.rs` module and `RunReporter`/`AggregateReporter` are not on the active path. |
 | Synthetic ↔ real calibration | [docs/synthetic_to_real_calibration.md](docs/synthetic_to_real_calibration.md) | Yes | |
 | **Missing**: detector trait + `DetectorKind` registry | — | — | Add a short doc cross-referencing [src/detector/mod.rs](src/detector/mod.rs). |
@@ -530,8 +527,6 @@ Suggested mapping from chapter sections to repository evidence:
 
 1. **Decide the fate of `SessionAwareSeries`.** Either (a) wire `RealBackend::load_clean_series` to construct `SessionAwareSeries` in `Intraday` mode and pass session boundaries into `FeatureFamily::RollingVol { session_reset: true }` and `StandardizedReturn { session_reset: true }`, or (b) state explicitly in the thesis and in [docs/data_pipeline.md](docs/data_pipeline.md) that intraday processing is currently session-naïve. As-is, the code in [src/data/session.rs](src/data/session.rs) is dead and the `session_reset` flags in feature families are not exercised on real data.
 2. **Disclose the unused reporting machinery.** Update [docs/reporting_and_export.md](docs/reporting_and_export.md) to flag that the typed [src/reporting/export/csv.rs](src/reporting/export/csv.rs) module and `RunReporter`/`AggregateReporter` in [src/reporting/report.rs](src/reporting/report.rs) are not part of the live path. Then either delete them or wire them in.
-3. **Resolve `RealEvalSummaryRow`.** Wire it into `direct_compare_runs` cross-asset aggregation, or delete it.
-
 ### Important (improves audit defensibility)
 
 4. Add a tiny integration test that drives a synthetic experiment end-to-end through the CLI (`run-experiment`) and asserts the full artifact set listed in §3.

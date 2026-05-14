@@ -8,6 +8,7 @@ pub mod result;
 pub mod runner;
 pub mod search;
 pub mod shared;
+pub mod sim_to_real_backend;
 pub mod synthetic_backend;
 
 pub use batch::{BatchConfig, BatchResult, run_batch};

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// Causal event matching between true changepoints and detector alarms.
 ///
 /// # Matching protocol
@@ -95,8 +94,6 @@ pub struct MatchResult {
     pub alarm_outcomes: Vec<(usize, AlarmOutcome)>,
     /// Total stream length T.
     pub stream_len: usize,
-    /// Detection window width used.
-    pub window: usize,
 }
 
 impl MatchResult {
@@ -154,14 +151,6 @@ impl MatchResult {
                 }
             })
             .collect()
-    }
-
-    /// Time index of the first false-positive alarm, if any.
-    pub fn first_false_alarm_t(&self) -> Option<usize> {
-        self.alarm_outcomes
-            .iter()
-            .find(|(_, o)| matches!(o, AlarmOutcome::FalsePositive))
-            .map(|(t, _)| *t)
     }
 }
 
@@ -235,7 +224,6 @@ impl EventMatcher {
             changepoint_outcomes,
             alarm_outcomes,
             stream_len: truth.stream_len,
-            window: w,
         }
     }
 }
@@ -338,14 +326,6 @@ mod tests {
         let r = m.match_events(&truth(vec![30, 70], 100), &[]);
         assert_eq!(r.n_missed(), 2);
         assert_eq!(r.n_alarms(), 0);
-    }
-
-    #[test]
-    fn first_false_alarm_time_correct() {
-        let m = matcher(10);
-        // τ=50, alarms at 20 (FP), 52 (TP)
-        let r = m.match_events(&truth(vec![50], 100), &[alarm(20), alarm(52)]);
-        assert_eq!(r.first_false_alarm_t(), Some(20));
     }
 
     #[test]

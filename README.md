@@ -18,7 +18,7 @@ For **real-data** experiments (optional, deferred): a free Alpha Vantage API key
 
 ```
 cargo run              # interactive menu
-cargo run -- e2e       # run all 3 registered synthetic experiments end-to-end
+cargo run -- e2e       # run all registered synthetic experiments end-to-end
 cargo run -r -- e2e    # release build (recommended for EM training runs)
 cargo run -- help      # direct CLI help
 ```
@@ -84,7 +84,7 @@ See [docs/interactive_cli.md](docs/interactive_cli.md) for the full menu referen
 Pass a subcommand as the first argument to skip the interactive menu (useful for scripting):
 
 ```
-cargo run -- e2e                                          # run all registered experiments end-to-end
+cargo run -- e2e                                          # run all registered synthetic experiments end-to-end
 cargo run -- run-experiment  --config experiment_config.json
 cargo run -- run-batch       --config a.json --config b.json [--save <dir>]
 cargo run -- run-real        --id <experiment_id> [--cache <path.duckdb>] [--save <dir>]
@@ -230,9 +230,9 @@ All detectors consume one-step causal filter output and apply a score + alarm po
 
 | Detector | Score | Alarm trigger |
 |----------|-------|---------------|
-| **HardSwitch** | Dominant regime label argmax_j alpha_{t|t}(j) | Label changes vs previous step |
-| **PosteriorTransition** | Off-diagonal posterior transition mass | Score exceeds threshold |
-| **Surprise** | -log c_t (negative log predictive density) | Score exceeds threshold |
+| **HardSwitch** | Indicator `1[argmax_j alpha_{t|t}(j) ≠ argmax_j alpha_{t-1|t-1}(j)]` (optional confidence gate) | Label changes vs previous step |
+| **PosteriorTransition** | `LeavePrevious`: `1 − alpha_{t|t}(r_{t-1})`; or `TotalVariation`: `½ Σ_j |alpha_{t|t}(j) − alpha_{t-1|t-1}(j)|` | Score exceeds threshold |
+| **Surprise** | `−log c_t` (optionally minus a lagged EMA baseline `b_{t-1}`) | Score exceeds threshold |
 
 The fixed-parameter policy (offline-fit, online-freeze) is described in [docs/fixed_parameter_policy.md](docs/fixed_parameter_policy.md).
 
@@ -335,22 +335,25 @@ runs/
 
 ### Registered Experiments
 
-Ten experiments are registered in `src/experiments/registry.rs`:
+Thirteen experiments are registered in `src/experiments/registry.rs`:
 
 | ID | Type | Description |
 |----|------|-------------|
 | `hard_switch` | Synthetic | HardSwitch, 2-regime, LogReturn/ZScore, horizon 2000 |
-| `posterior_transition` | Synthetic | PosteriorTransition, 2-regime, LogReturn/ZScore, horizon 2000 |
+| `posterior_transition` | Synthetic | PosteriorTransition (LeavePrevious), 2-regime, LogReturn/ZScore, horizon 2000 |
 | `surprise` | Synthetic | Surprise, 2-regime, LogReturn/ZScore, horizon 2000 |
-| `posterior_transition_tv` | Synthetic | PosteriorTransitionTV, 2-regime, LogReturn/ZScore, horizon 2000 |
+| `posterior_transition_tv` | Synthetic | PosteriorTransition (TotalVariation), 2-regime, LogReturn/ZScore, horizon 2000 |
 | `hard_switch_shock` | Synthetic | HardSwitch, shock-contaminated synthetic (jump noise path) |
 | `hard_switch_frozen` | Synthetic | HardSwitch, loads pre-fitted model from `data/frozen_models/hard_switch_frozen` |
 | `hard_switch_multi_start` | Synthetic | HardSwitch, multi-start EM (3 starts) — produces `multi_start_summary.json` |
+| `surprise_ema` | Synthetic | Surprise with EMA-baseline (`ema_alpha=0.3`) adjusted score |
+| `squared_return_surprise` | Synthetic | Surprise detector on `SquaredReturn` feature family |
 | `real_spy_daily_hard_switch` | Real | SPY daily adj-close log-returns, HardSwitch, 2018–present |
 | `real_wti_daily_surprise` | Real | WTI daily spot-price log-returns, Surprise, 2018–present |
 | `real_spy_intraday_hard_switch` | Real | SPY 15-min RTH log-returns (session-aware), HardSwitch, 2022–2025 |
+| `simreal_spy_daily_hard_switch` | Sim-to-real | EM trained on a synthetic stream calibrated to SPY (Quick-EM); online detector run on real SPY |
 
-The three synthetic experiments can all be run at once:
+The synthetic experiments can all be run at once:
 
 ```
 cargo run -- e2e
@@ -477,10 +480,12 @@ src/
     runner.rs                — ExperimentRunner<B> + ExperimentBackend trait
     synthetic_backend.rs     — SyntheticBackend: EM + detection + evaluation
     real_backend.rs          — RealBackend: DuckDB load, 70/15/15 split, Route A+B eval
+    sim_to_real_backend.rs   — SimToRealBackend: train EM on calibrated synthetic, test online on real
+    shared.rs                — backend-shared model training and online streaming helpers
     dry_run_backend.rs       — DryRunBackend: config validation without EM
     batch.rs                 — BatchConfig + run_batch + batch_summary.json
     result.rs                — ExperimentResult, RunStatus, EvaluationSummary
-    registry.rs              — 6 registered experiment definitions
+    registry.rs              — 13 registered experiment definitions (synthetic, real, sim-to-real)
     search.rs                — param-search grid + optimize() two-phase search driver
     artifact.rs              — run directory layout + snapshot helpers
   reporting/
@@ -529,4 +534,4 @@ src/
 cargo test
 ```
 
-334 tests covering all core components: filter/smoother correctness, EM convergence, detector alarm logic, calibration mapping, benchmark matching, experiment runner orchestration, real-backend data pipeline, and artifact serialisation.
+328 tests covering all core components: filter/smoother correctness, EM convergence, detector alarm logic, calibration mapping, benchmark matching, experiment runner orchestration, real-backend data pipeline, and artifact serialisation.

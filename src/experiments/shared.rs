@@ -1,3 +1,4 @@
+use crate::detector::frozen::{FrozenModel, StreamingSession};
 /// Shared pipeline stages for experiment backends.
 ///
 /// Both `SyntheticBackend` and `RealBackend` perform identical Baum-Welch EM
@@ -17,7 +18,6 @@ use crate::detector::{
     HardSwitchConfig, HardSwitchDetector, PersistencePolicy, PosteriorTransitionConfig,
     PosteriorTransitionDetector, SurpriseConfig, SurpriseDetector,
 };
-use crate::detector::frozen::{FrozenModel, StreamingSession};
 use crate::model::em::{EmConfig, fit_em};
 use crate::model::params::ModelParams;
 use crate::online::OnlineFilterState;
@@ -54,7 +54,8 @@ pub fn train_or_load_model_shared(
 
     match &cfg.model.training {
         TrainingMode::FitOffline => {
-            let train_obs = &features.observations[..features.train_n.min(features.observations.len())];
+            let train_obs =
+                &features.observations[..features.train_n.min(features.observations.len())];
             let k = cfg.model.k_regimes;
             let n_starts = cfg.model.em_n_starts.max(1);
             let em_cfg = EmConfig {
@@ -65,8 +66,7 @@ pub fn train_or_load_model_shared(
 
             // Run EM n_starts times; keep the result with the highest final
             // log-likelihood (multi-start robustness).
-            let mut all_results: Vec<crate::model::em::EmResult> =
-                Vec::with_capacity(n_starts);
+            let mut all_results: Vec<crate::model::em::EmResult> = Vec::with_capacity(n_starts);
             for _ in 0..n_starts {
                 let init_params = init_params_from_obs(train_obs, k)?;
                 if let Ok(r) = fit_em(train_obs, init_params, &em_cfg) {
@@ -140,10 +140,7 @@ pub fn train_or_load_model_shared(
                     multi_start_summary: None,
                 })
             } else {
-                anyhow::bail!(
-                    "LoadFrozen: model file not found at {}",
-                    path.display()
-                )
+                anyhow::bail!("LoadFrozen: model file not found at {}", path.display())
             }
         }
     }
@@ -162,9 +159,10 @@ pub fn run_online_shared(
     model: &ModelArtifact,
     features: &FeatureBundle,
 ) -> anyhow::Result<OnlineRunArtifact> {
-    let params = model.params.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("run_online: no fitted model params available")
-    })?;
+    let params = model
+        .params
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("run_online: no fitted model params available"))?;
 
     let frozen = FrozenModel::new(params.clone())?;
     let filter_state = OnlineFilterState::new(frozen.params());
@@ -177,8 +175,16 @@ pub fn run_online_shared(
             let outputs = session.step_batch(obs)?;
 
             let mut alarm_indices = Vec::new();
-            let mut score_trace = if save { Vec::with_capacity(obs.len()) } else { vec![] };
-            let mut regime_posteriors = if save { Vec::with_capacity(obs.len()) } else { vec![] };
+            let mut score_trace = if save {
+                Vec::with_capacity(obs.len())
+            } else {
+                vec![]
+            };
+            let mut regime_posteriors = if save {
+                Vec::with_capacity(obs.len())
+            } else {
+                vec![]
+            };
 
             for out in &outputs {
                 if save {
@@ -191,11 +197,11 @@ pub fn run_online_shared(
             }
 
             Ok(OnlineRunArtifact {
-                n_steps: obs.len(),
                 n_alarms: alarm_indices.len(),
                 alarm_indices,
                 score_trace,
                 regime_posteriors,
+                changepoint_truth: None,
             })
         }};
     }

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// End-to-end Phase 17 calibration workflow report.
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
@@ -9,16 +8,21 @@ use crate::model::simulate::JumpParams;
 
 use super::mapping::{CalibratedSyntheticParams, CalibrationMappingConfig, calibrate_to_synthetic};
 use super::summary::{EmpiricalCalibrationProfile, EmpiricalSummary, summarize_observation_values};
-use super::verify::{CalibrationVerification, VerificationTolerance, verify_calibration};
+use super::verify::{
+    CalibrationVerification, DEFAULT_SCALE_TOLERANCE, ScaleConsistencyCheck,
+    VerificationTargetMask, VerificationTolerance, scale_consistency_check,
+    verify_calibration_masked,
+};
 
 /// Full calibration artifact: mapping inputs, calibrated parameters, synthetic check.
 #[derive(Debug, Clone)]
 pub struct CalibrationReport {
     pub empirical_profile: EmpiricalCalibrationProfile,
-    pub mapping_config: CalibrationMappingConfig,
     pub calibrated: CalibratedSyntheticParams,
     pub synthetic_summary: EmpiricalSummary,
     pub verification: CalibrationVerification,
+    /// B′1: dispersion agreement between synthetic and empirical streams.
+    pub scale_check: ScaleConsistencyCheck,
     pub rng_seed: u64,
 }
 
@@ -27,12 +31,31 @@ pub struct CalibrationReport {
 pub struct CalibrationReportView {
     pub asset: String,
     pub feature_label: String,
+    /// E3 — bar-aware frequency tag (e.g. `"daily"` or `"intraday_15min"`).
+    #[serde(default)]
+    pub frequency: String,
     pub horizon: usize,
     pub expected_durations: Vec<f64>,
     pub empirical_n: usize,
     pub synthetic_n: usize,
     pub verification_passed: bool,
     pub verification_notes: Vec<String>,
+    /// E4 — calibration mapping notes (mean/variance policy decisions, C′2
+    /// ratio-guard actions, EM strategy info, etc.).
+    #[serde(default)]
+    pub mapping_notes: Vec<String>,
+    /// B′1: dispersion agreement between synthetic and empirical streams.
+    pub scale_check: ScaleConsistencyCheck,
+    /// C′4.3 — per-field verification record bundle.
+    #[serde(default)]
+    pub field_results: super::verify::FieldResults,
+    /// C′4.1 — verifier mask in effect when the report was produced.
+    #[serde(default)]
+    pub verification_mask: super::verify::VerificationTargetMask,
+    /// Seed used to drive the synthetic simulation underlying this report
+    /// (recorded for reproducibility).
+    #[serde(default)]
+    pub rng_seed: u64,
 }
 
 impl CalibrationReport {
@@ -40,12 +63,18 @@ impl CalibrationReport {
         CalibrationReportView {
             asset: self.empirical_profile.tag.asset.clone(),
             feature_label: self.empirical_profile.tag.feature_label.clone(),
+            frequency: self.empirical_profile.tag.frequency.clone(),
             horizon: self.calibrated.horizon,
             expected_durations: self.calibrated.expected_durations.clone(),
             empirical_n: self.empirical_profile.summary.n,
             synthetic_n: self.synthetic_summary.n,
             verification_passed: self.verification.within_tolerance,
             verification_notes: self.verification.notes.clone(),
+            mapping_notes: self.calibrated.mapping_notes.clone(),
+            scale_check: self.scale_check.clone(),
+            field_results: self.verification.field_results.clone(),
+            verification_mask: self.verification.mask.clone(),
+            rng_seed: self.rng_seed,
         }
     }
 }
@@ -80,14 +109,25 @@ pub fn run_calibration_workflow(
     )?;
 
     let synthetic_summary = summarize_observation_values(&sim.observations);
-    let verification = verify_calibration(&empirical_profile.summary, &synthetic_summary, &tol);
+    let mask = VerificationTargetMask::for_policy(&mapping_config);
+    let verification = verify_calibration_masked(
+        &empirical_profile.summary,
+        &synthetic_summary,
+        &tol,
+        &mask,
+    );
+    let scale_check = scale_consistency_check(
+        &empirical_profile.summary,
+        &synthetic_summary,
+        DEFAULT_SCALE_TOLERANCE,
+    );
 
     Ok(CalibrationReport {
         empirical_profile,
-        mapping_config,
         calibrated,
         synthetic_summary,
         verification,
+        scale_check,
         rng_seed,
     })
 }
@@ -128,6 +168,7 @@ mod tests {
                 high_episode_mean_duration: 8.0,
                 low_episode_mean_duration: 20.0,
             },
+            observations: Vec::new(),
         }
     }
 
@@ -141,7 +182,10 @@ mod tests {
         )
         .unwrap();
         assert!(report.synthetic_summary.n > 0);
-        assert_eq!(report.calibrated.horizon, report.mapping_config.horizon);
+        assert_eq!(
+            report.calibrated.horizon,
+            CalibrationMappingConfig::default().horizon
+        );
     }
 
     #[test]
@@ -156,5 +200,24 @@ mod tests {
         let v = report.view();
         assert_eq!(v.asset, "SPY");
         assert_eq!(v.feature_label, "log_return");
+    }
+
+    #[test]
+    fn report_view_surfaces_mapping_notes_and_frequency() {
+        let report = run_calibration_workflow(
+            profile(),
+            CalibrationMappingConfig::default(),
+            VerificationTolerance::default(),
+            42,
+        )
+        .unwrap();
+        let v = report.view();
+        assert_eq!(v.frequency, "daily");
+        assert!(!v.mapping_notes.is_empty(), "mapping_notes should be populated");
+        // JSON round-trip preserves new fields.
+        let json = serde_json::to_string(&v).unwrap();
+        assert!(json.contains("mapping_notes"));
+        assert!(json.contains("frequency"));
+        assert!(json.contains("field_results"));
     }
 }

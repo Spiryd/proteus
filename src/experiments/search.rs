@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// Grid search over detector and model parameters.
 ///
 /// [`ParamGrid`] sweeps `threshold`, `persistence_required`, and `cooldown`.
@@ -100,8 +99,14 @@ impl Default for ModelGrid {
                 FeatureFamilyConfig::LogReturn,
                 FeatureFamilyConfig::AbsReturn,
                 FeatureFamilyConfig::SquaredReturn,
-                FeatureFamilyConfig::RollingVol { window: 5, session_reset: false },
-                FeatureFamilyConfig::RollingVol { window: 20, session_reset: false },
+                FeatureFamilyConfig::RollingVol {
+                    window: 5,
+                    session_reset: false,
+                },
+                FeatureFamilyConfig::RollingVol {
+                    window: 20,
+                    session_reset: false,
+                },
             ],
         }
     }
@@ -117,8 +122,14 @@ impl ModelGrid {
                 FeatureFamilyConfig::LogReturn,
                 FeatureFamilyConfig::AbsReturn,
                 FeatureFamilyConfig::SquaredReturn,
-                FeatureFamilyConfig::RollingVol { window: 5, session_reset: true },
-                FeatureFamilyConfig::RollingVol { window: 20, session_reset: true },
+                FeatureFamilyConfig::RollingVol {
+                    window: 5,
+                    session_reset: true,
+                },
+                FeatureFamilyConfig::RollingVol {
+                    window: 20,
+                    session_reset: true,
+                },
             ],
         }
     }
@@ -186,7 +197,6 @@ pub fn apply_best(base: &ExperimentConfig, best: &SearchPoint) -> ExperimentConf
     cfg
 }
 
-
 /// Run a full grid search over detector parameters.
 ///
 /// For each grid point, clones `base`, overrides `detector.threshold /
@@ -231,7 +241,11 @@ pub fn grid_search<B: ExperimentBackend>(
     }
 
     // Best first.
-    points.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    points.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     points
 }
 
@@ -290,7 +304,11 @@ where
         }
     }
 
-    points.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    points.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let best_config = points
         .first()
@@ -365,7 +383,11 @@ where
         }
     }
 
-    points.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    points.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let best_config = points
         .first()
@@ -378,12 +400,8 @@ where
     }
 }
 
-
 fn extract_metrics(result: &ExperimentResult) -> (f64, f64, usize) {
-    let n_alarms = result
-        .detector_summary
-        .as_ref()
-        .map_or(0, |d| d.n_alarms);
+    let n_alarms = result.detector_summary.as_ref().map_or(0, |d| d.n_alarms);
 
     match result.evaluation_summary.as_ref() {
         Some(EvaluationSummary::Synthetic {
@@ -453,7 +471,9 @@ mod tests {
                 cooldown: 0,
                 ema_alpha: None,
             },
-            evaluation: EvaluationConfig::Synthetic { matching_window: 10 },
+            evaluation: EvaluationConfig::Synthetic {
+                matching_window: 10,
+            },
             output: OutputConfig {
                 root_dir: "./runs_test".to_string(),
                 write_json: false,

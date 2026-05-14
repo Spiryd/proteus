@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// Provenance and configuration metadata for a cleaned market-data series.
 ///
 /// `DatasetMeta` travels with every `CleanSeries` and `PartitionedSeries` so

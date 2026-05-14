@@ -33,8 +33,7 @@ pub fn registry() -> Vec<RegisteredExperiment> {
         },
         RegisteredExperiment {
             id: "posterior_transition",
-            description:
-                "PosteriorTransition — 2-regime synthetic, LogReturn/ZScore, horizon 2000",
+            description: "PosteriorTransition — 2-regime synthetic, LogReturn/ZScore, horizon 2000",
             build: posterior_transition,
         },
         RegisteredExperiment {
@@ -58,39 +57,38 @@ pub fn registry() -> Vec<RegisteredExperiment> {
             build: real_spy_intraday_hard_switch,
         },
         RegisteredExperiment {
+            id: "simreal_spy_daily_hard_switch",
+            description: "SPY daily  — Sim-to-real: EM trained on synthetic stream calibrated to SPY via Quick-EM",
+            build: simreal_spy_daily_hard_switch,
+        },
+        RegisteredExperiment {
             id: "posterior_transition_tv",
-            description:
-                "PosteriorTransitionTV — 2-regime synthetic, LogReturn/ZScore, TotalVariation score",
+            description: "PosteriorTransitionTV — 2-regime synthetic, LogReturn/ZScore, TotalVariation score",
             build: posterior_transition_tv,
         },
         RegisteredExperiment {
             id: "hard_switch_shock",
-            description:
-                "HardSwitch (shock_contaminated) — 2-regime synthetic with jump contamination",
+            description: "HardSwitch (shock_contaminated) — 2-regime synthetic with jump contamination",
             build: hard_switch_shock,
         },
         RegisteredExperiment {
             id: "hard_switch_frozen",
-            description:
-                "HardSwitch (LoadFrozen) — loads pre-fitted model from data/frozen_models/hard_switch_frozen",
+            description: "HardSwitch (LoadFrozen) — loads pre-fitted model from data/frozen_models/hard_switch_frozen",
             build: hard_switch_frozen,
         },
         RegisteredExperiment {
             id: "hard_switch_multi_start",
-            description:
-                "HardSwitch (multi-start EM, n_starts=3) — exercises multi_start_summary.json artifact",
+            description: "HardSwitch (multi-start EM, n_starts=3) — exercises multi_start_summary.json artifact",
             build: hard_switch_multi_start,
         },
         RegisteredExperiment {
             id: "surprise_ema",
-            description:
-                "Surprise EMA — 2-regime synthetic, Surprise detector with ema_alpha=0.3 slow baseline",
+            description: "Surprise EMA — 2-regime synthetic, Surprise detector with ema_alpha=0.3 slow baseline",
             build: surprise_ema,
         },
         RegisteredExperiment {
             id: "squared_return_surprise",
-            description:
-                "SquaredReturn — 2-regime synthetic, Surprise detector on squared-return feature",
+            description: "SquaredReturn — 2-regime synthetic, Surprise detector on squared-return feature",
             build: squared_return_surprise,
         },
     ]
@@ -132,7 +130,9 @@ fn base(run_label: &str, notes: &str) -> ExperimentConfig {
             cooldown: 5,
             ema_alpha: None,
         },
-        evaluation: EvaluationConfig::Synthetic { matching_window: 20 },
+        evaluation: EvaluationConfig::Synthetic {
+            matching_window: 20,
+        },
         output: OutputConfig {
             root_dir: "./runs".to_string(),
             write_json: true,
@@ -264,7 +264,12 @@ pub fn hard_switch_multi_start() -> ExperimentConfig {
 // Real-data base (shared fields for both SPY and WTI real experiments)
 // ---------------------------------------------------------------------------
 
-fn base_real(run_label: &str, notes: &str, asset: &str, frequency: RealFrequency) -> ExperimentConfig {
+fn base_real(
+    run_label: &str,
+    notes: &str,
+    asset: &str,
+    frequency: RealFrequency,
+) -> ExperimentConfig {
     ExperimentConfig {
         meta: RunMetaConfig {
             run_label: run_label.to_string(),
@@ -298,10 +303,7 @@ fn base_real(run_label: &str, notes: &str, asset: &str, frequency: RealFrequency
             ema_alpha: None,
         },
         evaluation: EvaluationConfig::Real {
-            proxy_events_path: format!(
-                "data/proxy_events/{}.json",
-                asset.to_lowercase()
-            ),
+            proxy_events_path: format!("data/proxy_events/{}.json", asset.to_lowercase()),
             route_a_point_pre_bars: 5,
             route_a_point_post_bars: 10,
             route_a_causal_only: false,
@@ -314,7 +316,7 @@ fn base_real(run_label: &str, notes: &str, asset: &str, frequency: RealFrequency
             save_traces: true,
         },
         reproducibility: ReproducibilityConfig {
-            seed: None, // real data; no simulation seed needed
+            seed: None,                  // real data; no simulation seed needed
             deterministic_run_id: false, // real experiments carry no RNG seed
             save_config_snapshot: true,
             record_git_info: false,
@@ -438,8 +440,87 @@ pub fn real_spy_intraday_hard_switch() -> ExperimentConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Additional experiments exercising implemented-but-unregistered features
+/// **Sim-to-real:** SPY daily HardSwitch trained on synthetic stream
+/// calibrated from real SPY via Quick-EM.
+///
+/// Pipeline:
+/// 1. Load SPY daily adjusted-close prices from the DuckDB cache.
+/// 2. Quick-EM calibration: fit a 2-regime Gaussian MSM on the real training
+///    partition log-returns; use the result as the synthetic generator.
+/// 3. Simulate 2 000 synthetic observations from the calibrated `ModelParams`.
+/// 4. Apply a single z-score scaler (fitted on real-train) to both real and
+///    synthetic streams (B\u20321 contract).
+/// 5. Train Baum-Welch EM on the scaled synthetic stream only.
+/// 6. Run the synthetic-trained `FrozenModel` online over the real series.
+/// 7. Evaluate against SPY proxy events via Route A + Route B.
+pub fn simreal_spy_daily_hard_switch() -> ExperimentConfig {
+    use crate::calibration::{CalibrationMappingConfig, CalibrationStrategy};
+
+    ExperimentConfig {
+        meta: RunMetaConfig {
+            run_label: "simreal_spy_daily_hard_switch".to_string(),
+            notes: Some(
+                "Sim-to-real | SPY daily | Quick-EM calibration | synthetic-trained EM | real-tested HardSwitch"
+                    .to_string(),
+            ),
+        },
+        mode: ExperimentMode::SimToReal,
+        data: DataConfig::CalibratedSynthetic {
+            real_asset: "SPY".to_string(),
+            real_frequency: RealFrequency::Daily,
+            real_dataset_id: "spy_daily".to_string(),
+            real_date_start: Some("2018-01-01".to_string()),
+            real_date_end: None,
+            horizon: 2000,
+            mapping: CalibrationMappingConfig {
+                k: 2,
+                horizon: 2000,
+                strategy: CalibrationStrategy::QuickEm { max_iter: 100, tol: 1e-6 },
+                ..CalibrationMappingConfig::default()
+            },
+            dataset_id: Some("simreal_spy_daily".to_string()),
+        },
+        features: FeatureConfig {
+            family: FeatureFamilyConfig::LogReturn,
+            scaling: ScalingPolicyConfig::ZScore,
+            session_aware: false,
+        },
+        model: ModelConfig {
+            k_regimes: 2,
+            training: TrainingMode::FitOffline,
+            em_max_iter: 300,
+            em_tol: 1e-7,
+            em_n_starts: 1,
+        },
+        detector: DetectorConfig {
+            detector_type: DetectorType::HardSwitch,
+            threshold: 0.55,
+            persistence_required: 2,
+            cooldown: 5,
+            ema_alpha: None,
+        },
+        evaluation: EvaluationConfig::Real {
+            proxy_events_path: "data/proxy_events/spy.json".to_string(),
+            route_a_point_pre_bars: 5,
+            route_a_point_post_bars: 10,
+            route_a_causal_only: false,
+            route_b_min_segment_len: 10,
+        },
+        output: OutputConfig {
+            root_dir: "./runs".to_string(),
+            write_json: true,
+            write_csv: true,
+            save_traces: true,
+        },
+        reproducibility: ReproducibilityConfig {
+            seed: Some(42),
+            deterministic_run_id: true,
+            save_config_snapshot: true,
+            record_git_info: false,
+        },
+    }
+}
+
 // ---------------------------------------------------------------------------
 
 /// `SurpriseDetector` with EMA baseline smoothing (`ema_alpha = 0.95`).

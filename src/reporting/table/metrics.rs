@@ -1,5 +1,5 @@
-use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricsTableRow {
@@ -37,9 +37,7 @@ impl MetricsTableBuilder {
         out.push_str("|--------|---|---|---|---|---|---|---|---|\n");
 
         for row in &self.rows {
-            let coverage_str = row
-                .coverage
-                .map_or_else(String::new, |v| format!("{v:.3}"));
+            let coverage_str = row.coverage.map_or_else(String::new, |v| format!("{v:.3}"));
             let precision_str = row
                 .precision
                 .map_or_else(String::new, |v| format!("{v:.3}"));

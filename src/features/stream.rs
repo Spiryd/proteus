@@ -1,25 +1,24 @@
-#![allow(dead_code)]
-/// Model-ready observation stream: the final output of the feature pipeline.
+﻿/// Model-ready observation stream: the final output of the feature pipeline.
 ///
 /// # Pipeline summary
 ///
 /// ```text
 /// CleanSeries  (Phase 15: ascending, gap-checked, metadata-tagged)
-///      │
-///      │  FeatureConfig { family, scaling, session_aware }
-///      ▼
+///      â”‚
+///      â”‚  FeatureConfig { family, scaling, session_aware }
+///      â–¼
 /// FeatureStream::build(series, config)
-///      │   • compute log-returns (or other family)
-///      │   • apply session-boundary policy (if intraday + session_aware)
-///      │   • compute rolling statistics (if applicable)
-///      │   • trim warmup prefix
-///      │   • fit scaler on training partition (if scaling ≠ None)
-///      │   • apply scaler to all partitions
-///      ▼
+///      â”‚   â€¢ compute log-returns (or other family)
+///      â”‚   â€¢ apply session-boundary policy (if intraday + session_aware)
+///      â”‚   â€¢ compute rolling statistics (if applicable)
+///      â”‚   â€¢ trim warmup prefix
+///      â”‚   â€¢ fit scaler on training partition (if scaling â‰  None)
+///      â”‚   â€¢ apply scaler to all partitions
+///      â–¼
 /// FeatureStream
-///      ├── observations: Vec<Observation>  ← y_t, ready for EM / detector
-///      ├── meta: FeatureStreamMeta         ← provenance
-///      └── scaler: FittedScaler            ← frozen for online use
+///      â”œâ”€â”€ observations: Vec<Observation>  â† y_t, ready for EM / detector
+///      â”œâ”€â”€ meta: FeatureStreamMeta         â† provenance
+///      â””â”€â”€ scaler: FittedScaler            â† frozen for online use
 /// ```
 ///
 /// # Causal guarantee
@@ -95,9 +94,6 @@ pub struct FeatureStreamMeta {
     /// The feature family that was applied.
     pub family: FeatureFamily,
 
-    /// The scaling policy that was applied.
-    pub scaling: ScalingPolicy,
-
     /// Number of price bars dropped as warmup at the beginning of the series.
     ///
     /// `feature_observations[0]` corresponds to
@@ -106,15 +102,6 @@ pub struct FeatureStreamMeta {
 
     /// Total number of feature observations.
     pub n_obs: usize,
-
-    /// Timestamp of the first feature observation (after warmup trimming).
-    pub first_ts: Option<NaiveDateTime>,
-
-    /// Timestamp of the last feature observation.
-    pub last_ts: Option<NaiveDateTime>,
-
-    /// Whether session-boundary handling was applied (intraday only).
-    pub session_aware: bool,
 }
 
 // =========================================================================
@@ -154,9 +141,9 @@ impl FeatureStream {
     ///
     /// # Arguments
     ///
-    /// * `prices` — ascending-ordered price observations (as from `CleanSeries`).
-    /// * `data_meta` — provenance metadata from Phase 15.
-    /// * `config`   — feature configuration.
+    /// * `prices` â€” ascending-ordered price observations (as from `CleanSeries`).
+    /// * `data_meta` â€” provenance metadata from Phase 15.
+    /// * `config`   â€” feature configuration.
     pub fn build(prices: &[Observation], data_meta: DatasetMeta, config: FeatureConfig) -> Self {
         let is_intraday = matches!(data_meta.mode, DataMode::Intraday { .. });
         let use_session = config.session_aware && is_intraday;
@@ -180,18 +167,12 @@ impl FeatureStream {
 
         let n_warmup_dropped = config.family.warmup_bars();
         let n_obs = observations.len();
-        let first_ts = observations.first().map(|o| o.timestamp);
-        let last_ts = observations.last().map(|o| o.timestamp);
 
         let meta = FeatureStreamMeta {
             data_meta,
             family: config.family,
-            scaling: config.scaling,
             n_warmup_dropped,
             n_obs,
-            first_ts,
-            last_ts,
-            session_aware: use_session,
         };
 
         Self {
@@ -209,16 +190,6 @@ impl FeatureStream {
     /// Timestamps of feature observations.
     pub fn timestamps(&self) -> Vec<NaiveDateTime> {
         self.observations.iter().map(|o| o.timestamp).collect()
-    }
-
-    /// Number of feature observations.
-    pub fn len(&self) -> usize {
-        self.observations.len()
-    }
-
-    /// `true` iff there are no observations (degenerate / all-warmup case).
-    pub fn is_empty(&self) -> bool {
-        self.observations.is_empty()
     }
 
     /// Short experiment label combining asset symbol and feature family label.
@@ -362,7 +333,7 @@ mod tests {
             session_aware: false,
         };
         let stream = FeatureStream::build(&prices, meta, config);
-        assert_eq!(stream.len(), 2);
+        assert_eq!(stream.observations.len(), 2);
         let expected_r0 = (110f64 / 100.0).ln();
         assert!((stream.observations[0].value - expected_r0).abs() < 1e-12);
     }
@@ -407,7 +378,7 @@ mod tests {
 
     #[test]
     fn rolling_vol_warmup_is_window() {
-        // 10 price bars, window=5 → 4 returns consumed as warmup → 5 outputs
+        // 10 price bars, window=5 â†’ 4 returns consumed as warmup â†’ 5 outputs
         let prices: Vec<Observation> = (0..10)
             .map(|i| obs(&format!("2024-01-{:02} 00:00:00", i + 2), 100.0 + i as f64))
             .collect();
@@ -422,8 +393,8 @@ mod tests {
             session_aware: false,
         };
         let stream = FeatureStream::build(&prices, meta, config);
-        // 9 returns, window=5 → 5 outputs
-        assert_eq!(stream.len(), 5);
+        // 9 returns, window=5 â†’ 5 outputs
+        assert_eq!(stream.observations.len(), 5);
         assert_eq!(stream.meta.n_warmup_dropped, 5);
     }
 
@@ -431,7 +402,7 @@ mod tests {
 
     #[test]
     fn zscore_train_prefix_determines_scaler() {
-        // 4 prices → 3 returns; n_train=2 → scaler fitted on first 2 returns only
+        // 4 prices â†’ 3 returns; n_train=2 â†’ scaler fitted on first 2 returns only
         let prices = daily_prices(&[
             (100.0, "2024-01-02"),
             (110.0, "2024-01-03"),
@@ -489,7 +460,7 @@ mod tests {
         };
         let stream = FeatureStream::build(&prices, meta, config);
         // Returns at 09:35 day1 + 09:35 day2 = 2 (cross-day return skipped)
-        assert_eq!(stream.len(), 2);
+        assert_eq!(stream.observations.len(), 2);
     }
 
     #[test]
@@ -519,7 +490,7 @@ mod tests {
         let s_no = FeatureStream::build(&prices, meta_no_sa, cfg_no);
         let s_yes = FeatureStream::build(&prices, meta_sa, cfg_yes);
 
-        assert_eq!(s_no.len(), s_yes.len());
+        assert_eq!(s_no.observations.len(), s_yes.observations.len());
         for (a, b) in s_no.observations.iter().zip(s_yes.observations.iter()) {
             assert!((a.value - b.value).abs() < 1e-12);
         }
@@ -537,9 +508,8 @@ mod tests {
             session_aware: false,
         };
         let stream = FeatureStream::build(&[], meta, config);
-        assert!(stream.is_empty());
-        assert!(stream.meta.first_ts.is_none());
-    }
+        assert!(stream.observations.is_empty());
+            }
 
     #[test]
     fn single_price_produces_empty_log_return_stream() {
@@ -552,6 +522,7 @@ mod tests {
             session_aware: false,
         };
         let stream = FeatureStream::build(&prices, meta, config);
-        assert!(stream.is_empty());
+        assert!(stream.observations.is_empty());
     }
 }
+

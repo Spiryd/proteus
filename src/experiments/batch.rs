@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use super::config::ExperimentConfig;
 use super::result::ExperimentResult;
 use super::runner::{ExperimentBackend, ExperimentRunner};
@@ -14,17 +13,6 @@ pub struct BatchResult {
     pub run_results: Vec<ExperimentResult>,
     pub n_success: usize,
     pub n_failed: usize,
-}
-
-impl BatchResult {
-    pub fn summary_line(&self) -> String {
-        format!(
-            "batch completed: {} success, {} failed ({} total)",
-            self.n_success,
-            self.n_failed,
-            self.run_results.len()
-        )
-    }
 }
 
 pub fn run_batch<B: ExperimentBackend>(

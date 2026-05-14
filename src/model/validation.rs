@@ -27,7 +27,9 @@ mod tests {
     //! G - Short samples (T=10)
     //! H - Long samples (T=50_000, numerical stability)
 
-    use super::super::{FilterResult, ModelParams, filter, log_likelihood, simulate};
+    use super::super::filter::{FilterResult, filter};
+    use super::super::simulate::simulate;
+    use super::super::ModelParams;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
 
@@ -59,16 +61,12 @@ mod tests {
         for t in 0..result.t {
             assert_prob_vec(&result.predicted[t], "predicted", t);
             assert_prob_vec(&result.filtered[t], "filtered", t);
-            let lp = result.log_predictive[t];
-            assert!(lp.is_finite(), "log_predictive[{t}] = {lp} is not finite");
         }
 
-        let sum_lp: f64 = result.log_predictive.iter().sum();
         assert!(
-            (result.log_likelihood - sum_lp).abs() < 1e-10,
-            "log_likelihood={:.12} != sum log_predictive={:.12}",
-            result.log_likelihood,
-            sum_lp
+            result.log_likelihood.is_finite(),
+            "log_likelihood = {} is not finite",
+            result.log_likelihood
         );
 
         result
@@ -497,9 +495,9 @@ mod tests {
         );
         let mut rng = SmallRng::seed_from_u64(SEED);
         let sim = simulate(params.clone(), 20_000, &mut rng).unwrap();
-        let ll = log_likelihood(&params, &sim.observations).unwrap();
+        let ll = filter(&params, &sim.observations).unwrap().log_likelihood;
 
-        let per_step = ll / sim.t as f64;
+        let per_step = ll / sim.observations.len() as f64;
         assert!(
             per_step > -10.0 && per_step < 0.0,
             "scenario H: per-step LL = {per_step:.4}, expected in (-10, 0)"

@@ -77,10 +77,6 @@ pub struct FilterResult {
     /// This is the primary inference output of the filter.
     /// Shape: T × K.
     pub filtered: Vec<Vec<f64>>,
-    /// `log_predictive[t]` = log cₜ₊₁ = log f(y_{t+1} | y_{1:t}).
-    ///
-    /// Shape: T.
-    pub log_predictive: Vec<f64>,
     /// Total sample log-likelihood: log L(Θ) = Σₜ log cₜ.
     ///
     /// This is the quantity that EM and model selection will optimize.
@@ -114,7 +110,6 @@ pub fn filter(params: &ModelParams, obs: &[f64]) -> Result<FilterResult> {
 
     let mut predicted = Vec::with_capacity(t_len);
     let mut filtered: Vec<Vec<f64>> = Vec::with_capacity(t_len);
-    let mut log_predictive = Vec::with_capacity(t_len);
     let mut log_likelihood = 0.0_f64;
 
     // ------------------------------------------------------------------
@@ -124,7 +119,6 @@ pub fn filter(params: &ModelParams, obs: &[f64]) -> Result<FilterResult> {
     let (filt_0, log_c_0) = bayes_update(&emission, obs[0], &pred_0, k)?;
     predicted.push(pred_0);
     filtered.push(filt_0);
-    log_predictive.push(log_c_0);
     log_likelihood += log_c_0;
 
     // ------------------------------------------------------------------
@@ -141,7 +135,6 @@ pub fn filter(params: &ModelParams, obs: &[f64]) -> Result<FilterResult> {
 
         predicted.push(pred_t);
         filtered.push(filt_t);
-        log_predictive.push(log_c_t);
         log_likelihood += log_c_t;
     }
 
@@ -150,7 +143,6 @@ pub fn filter(params: &ModelParams, obs: &[f64]) -> Result<FilterResult> {
         k,
         predicted,
         filtered,
-        log_predictive,
         log_likelihood,
     })
 }
@@ -279,7 +271,6 @@ mod tests {
         assert_eq!(result.k, 2);
         assert_eq!(result.predicted.len(), 5);
         assert_eq!(result.filtered.len(), 5);
-        assert_eq!(result.log_predictive.len(), 5);
         for t in 0..5 {
             assert_eq!(result.predicted[t].len(), 2, "predicted[{t}] wrong length");
             assert_eq!(result.filtered[t].len(), 2, "filtered[{t}] wrong length");
@@ -369,36 +360,15 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 6 — log_likelihood equals sum of log_predictive
+    // Test 6 — log_likelihood is finite for any well-posed input
     // -----------------------------------------------------------------------
     #[test]
-    fn test_log_likelihood_equals_sum_of_log_predictive() {
-        let params = separated_params();
-        let obs = vec![-9.8, 10.2, 9.7, -10.1, -9.5];
-        let result = filter(&params, &obs).unwrap();
-
-        let expected: f64 = result.log_predictive.iter().sum();
-        assert!(
-            (result.log_likelihood - expected).abs() < TOL,
-            "log_likelihood={:.12}, sum(log_predictive)={:.12}",
-            result.log_likelihood,
-            expected
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Test 7 — All log_predictive values are finite
-    // -----------------------------------------------------------------------
-    #[test]
-    fn test_log_predictive_is_finite() {
+    fn test_log_likelihood_is_finite() {
         let params = separated_params();
         let mut rng = SmallRng::seed_from_u64(SEED);
         let sim = simulate(params.clone(), 500, &mut rng).unwrap();
         let result = filter(&params, &sim.observations).unwrap();
-
-        for (t, &lp) in result.log_predictive.iter().enumerate() {
-            assert!(lp.is_finite(), "log_predictive[{t}] = {lp} is not finite");
-        }
+        assert!(result.log_likelihood.is_finite());
     }
 
     // -----------------------------------------------------------------------
@@ -534,7 +504,7 @@ mod tests {
         let sim = simulate(params.clone(), 2_000, &mut rng).unwrap();
         let result = filter(&params, &sim.observations).unwrap();
 
-        let correct: usize = (0..sim.t)
+        let correct: usize = (0..sim.states.len())
             .filter(|&t| {
                 let pred_regime = if result.filtered[t][0] >= result.filtered[t][1] {
                     0
@@ -544,7 +514,7 @@ mod tests {
                 pred_regime == sim.states[t]
             })
             .count();
-        let accuracy = correct as f64 / sim.t as f64;
+        let accuracy = correct as f64 / sim.states.len() as f64;
 
         assert!(
             accuracy > 0.95,

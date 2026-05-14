@@ -779,6 +779,73 @@ EMA smoother field.
 
 ---
 
+## 19.5 Verify sim-to-real pipeline (post-Phase-17′ baseline)
+
+This section covers the sim-to-real bridge added in Phase 17′:
+`ExperimentMode::SimToReal`, `DataConfig::CalibratedSynthetic`,
+`SimToRealBackend`, the `CalibrationStrategy::QuickEm` calibration policy,
+the `scale_consistency_check` verifier, and the
+`compare-sim-vs-real` CLI subcommand.
+
+**Do**
+
+* Re-build and re-run `cargo test`; expect ≥ 347 tests passing with no failures.
+* Run `cargo run -- run-real --id simreal_spy_daily_hard_switch --cache data/commodities.duckdb`
+  and confirm the SimToReal pipeline completes end-to-end. The terminal output
+  should show stage timings for resolve_data → build_features →
+  train_or_load_model → run_online → evaluate_real.
+* Inspect the run directory: look for `synthetic_training_provenance.json`
+  (replaces `split_summary.json` in this mode) and `sim_to_real_summary.json`.
+  The standard `route_a_result.json`, `route_b_result.json`,
+  `real_eval_summary.csv`, `result.json` should also be present.
+* Open `synthetic_training_provenance.json` and confirm it contains the
+  empirical summary, the calibrated `ModelParams` (π, transition, means,
+  variances), and a `scale_consistency_check` block.
+* Open `sim_to_real_summary.json` and confirm `train_source`, `test_source`,
+  `n_real_observations`, `n_synthetic_observations`, embedded `provenance`,
+  `model_params_synthetic_trained`, and `eval_real_metrics` are present.
+* Run `cargo run -- compare-sim-vs-real --id simreal_spy_daily_hard_switch
+  --cache data/commodities.duckdb --save ./runs/comparison/simreal_spy_daily`
+  and verify it executes both pipelines (a SimToReal run, then a derived
+  Real-mode comparator) and writes `sim_vs_real_comparison.json` with two
+  populated metric blocks.
+
+**Expected result**
+
+* SimToReal run exits with `Success` (or `PartialSuccess` if plots are
+  skipped on a system without a font backend).
+* `synthetic_training_provenance.json` is structurally valid JSON, contains
+  the calibration profile, and lists the `CalibrationStrategy::QuickEm`
+  outputs in `model_params` / `synthetic_params`.
+* `scale_consistency_check.passed == true` (within
+  `DEFAULT_SCALE_TOLERANCE = 0.10`); if `false`, the warning should also
+  appear in `result.warnings[]`.
+* `sim_to_real_summary.json` exists and its `eval_real_metrics` mirrors the
+  Route A + Route B values in `real_eval_summary.csv`.
+* `compare-sim-vs-real` produces both run directories and a comparison file
+  where the two `metrics` objects have the same keys (`event_coverage`,
+  `alarm_relevance`, `segmentation_coherence`).
+
+**Tangible artifacts**
+
+* `synthetic_training_provenance.json` from a SimToReal run
+* `sim_to_real_summary.json` from a SimToReal run
+* `sim_vs_real_comparison.json` from a compare-sim-vs-real run
+
+**Checklist**
+
+* [ ] `cargo test` reports ≥ 347 passed, 0 failed
+* [ ] `run-real --id simreal_spy_daily_hard_switch` completes successfully
+* [ ] `synthetic_training_provenance.json` present and parseable
+* [ ] `sim_to_real_summary.json` present with all expected fields
+* [ ] `scale_consistency_check` recorded (pass or recorded warning)
+* [ ] `compare-sim-vs-real` produces `sim_vs_real_comparison.json`
+* [ ] `sim_trained.metrics` and `real_trained.metrics` are both populated
+* [ ] Real eval route artifacts (`route_a_result.json`, `route_b_result.json`)
+      written alongside the SimToReal artifacts
+
+---
+
 ## 20. Final human sign-off checklist
 
 You can call the system practically complete when all of the following are true:
@@ -794,6 +861,7 @@ You can call the system practically complete when all of the following are true:
 * [ ] I can run a small batch experiment
 * [ ] I can reproduce a run from saved config/artifacts
 * [ ] I can run a joint model + detector optimization sweep
+* [ ] I can run a sim-to-real experiment and compare it against a train-on-real baseline
 * [ ] I have enough saved outputs to start writing the thesis without rerunning everything
 
 ---
@@ -821,4 +889,5 @@ Run the verification in this order:
 17. docs audit
 18. model + detector joint optimization
 19. newly wired features (post-baseline)
-20. final sign-off
+20. sim-to-real pipeline (post-Phase-17′ baseline)
+21. final sign-off

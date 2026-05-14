@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
-use plotters::prelude::*;
 use serde::{Deserialize, Serialize};
+#[cfg(not(test))]
+use plotters::prelude::*;
+#[cfg(not(test))]
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

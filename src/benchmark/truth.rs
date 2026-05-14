@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// Ground-truth changepoint representation.
 ///
 /// A [`ChangePointTruth`] holds the ordered sequence of true changepoint
@@ -57,44 +56,6 @@ impl ChangePointTruth {
         }
         Ok(Self { times, stream_len })
     }
-
-    /// Construct from a simulated regime sequence `S_1, S_2, …, S_T`.
-    ///
-    /// A changepoint is declared at time t whenever `S_t ≠ S_{t-1}`.
-    /// Time is 1-based: the earliest possible changepoint is at t = 2.
-    pub fn from_regime_sequence(regimes: &[usize]) -> Result<Self> {
-        let stream_len = regimes.len();
-        let times: Vec<usize> = (1..stream_len)
-            .filter(|&i| regimes[i] != regimes[i - 1])
-            .map(|i| i + 1) // convert 0-based change index to 1-based time
-            .collect();
-        Self::new(times, stream_len)
-    }
-
-    /// Number of true changepoints M.
-    pub fn m(&self) -> usize {
-        self.times.len()
-    }
-
-    /// `true` iff the stream has no true changepoints.
-    pub fn is_no_change(&self) -> bool {
-        self.times.is_empty()
-    }
-}
-
-// =========================================================================
-// StreamMeta
-// =========================================================================
-
-/// Optional metadata attached to a benchmark stream.
-#[derive(Debug, Clone, Default)]
-pub struct StreamMeta {
-    /// Human-readable scenario identifier, e.g. `"mean_shift_k2"`.
-    pub scenario_id: String,
-    /// Numeric stream index within a repeated-run experiment.
-    pub stream_index: usize,
-    /// Human-readable detector identifier, e.g. `"hard_switch"`.
-    pub detector_id: String,
 }
 
 // =========================================================================
@@ -108,15 +69,13 @@ mod tests {
     #[test]
     fn truth_accepts_valid_times() {
         let t = ChangePointTruth::new(vec![10, 50, 90], 100).unwrap();
-        assert_eq!(t.m(), 3);
-        assert!(!t.is_no_change());
+        assert_eq!(t.times.len(), 3);
     }
 
     #[test]
     fn truth_accepts_empty_no_change() {
         let t = ChangePointTruth::new(vec![], 200).unwrap();
-        assert_eq!(t.m(), 0);
-        assert!(t.is_no_change());
+        assert!(t.times.is_empty());
     }
 
     #[test]
@@ -129,19 +88,5 @@ mod tests {
     fn truth_rejects_non_increasing() {
         assert!(ChangePointTruth::new(vec![20, 10], 100).is_err());
         assert!(ChangePointTruth::new(vec![20, 20], 100).is_err());
-    }
-
-    #[test]
-    fn truth_from_regime_sequence_correct() {
-        // regimes: [0, 0, 1, 1, 0] → changes at positions 2→3 (time=3) and 3→4 (time=5)
-        let t = ChangePointTruth::from_regime_sequence(&[0, 0, 1, 1, 0]).unwrap();
-        assert_eq!(t.times, vec![3, 5]);
-        assert_eq!(t.stream_len, 5);
-    }
-
-    #[test]
-    fn truth_from_regime_sequence_no_change() {
-        let t = ChangePointTruth::from_regime_sequence(&[1, 1, 1, 1]).unwrap();
-        assert!(t.is_no_change());
     }
 }

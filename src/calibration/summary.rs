@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// Empirical summary extraction for Phase 17 synthetic-to-real calibration.
 ///
 /// This module computes feature-family-aware calibration statistics from the
@@ -10,7 +9,7 @@
 /// - Compute summaries on `FeatureStream::observations` (the actual `y_t`).
 use serde::{Deserialize, Serialize};
 
-use crate::features::{FeatureFamily, FeatureStream};
+use crate::features::FeatureFamily;
 
 /// Which partition is allowed for calibration fitting.
 ///
@@ -81,57 +80,9 @@ pub struct EmpiricalCalibrationProfile {
     pub feature_family: FeatureFamily,
     pub targets: SummaryTargetSet,
     pub summary: EmpiricalSummary,
-}
-
-/// Compute an empirical calibration profile from a feature stream and selected
-/// calibration partition boundaries.
-///
-/// `n_train` and `n_validation` are lengths measured in feature bars. They
-/// usually come from the time split applied in Phase 15/16.
-pub fn summarize_feature_stream(
-    stream: &FeatureStream,
-    partition: CalibrationPartition,
-    n_train: usize,
-    n_validation: usize,
-    targets: SummaryTargetSet,
-) -> EmpiricalCalibrationProfile {
-    let values = select_partition_values(stream, partition, n_train, n_validation);
-    let summary = summarize_observation_values(&values);
-    let tag = CalibrationDatasetTag {
-        asset: stream.meta.data_meta.symbol.clone(),
-        frequency: if stream.meta.data_meta.mode.is_daily() {
-            "daily".to_string()
-        } else {
-            "intraday".to_string()
-        },
-        feature_label: stream.meta.family.label(),
-        partition,
-    };
-    EmpiricalCalibrationProfile {
-        tag,
-        feature_family: stream.meta.family.clone(),
-        targets,
-        summary,
-    }
-}
-
-fn select_partition_values(
-    stream: &FeatureStream,
-    partition: CalibrationPartition,
-    n_train: usize,
-    n_validation: usize,
-) -> Vec<f64> {
-    let n_total = stream.observations.len();
-    let n_train = n_train.min(n_total);
-    let n_val_end = (n_train + n_validation).min(n_total);
-
-    let slice = match partition {
-        CalibrationPartition::TrainOnly => &stream.observations[..n_train],
-        CalibrationPartition::TrainAndValidation => &stream.observations[..n_val_end],
-        CalibrationPartition::FullSeries => &stream.observations[..],
-    };
-
-    slice.iter().map(|o| o.value).collect()
+    /// Raw partition observations (used by `CalibrationStrategy::QuickEm`).
+    /// May be empty when only summary statistics are available.
+    pub observations: Vec<f64>,
 }
 
 pub fn summarize_observation_values(values: &[f64]) -> EmpiricalSummary {
@@ -303,49 +254,6 @@ fn episode_duration_means(abs_values: &[f64], high_threshold: f64) -> (f64, f64)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::Observation;
-    use crate::data::meta::{DataMode, DataSource, DatasetMeta, PriceField, SessionConvention};
-    use crate::features::FeatureStream;
-    use crate::features::scaler::ScalingPolicy;
-    use chrono::NaiveDateTime;
-
-    fn obs(ts: &str, v: f64) -> Observation {
-        Observation {
-            timestamp: NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S").unwrap(),
-            value: v,
-        }
-    }
-
-    fn dummy_stream(vals: &[f64]) -> FeatureStream {
-        let observations: Vec<Observation> = vals
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| obs(&format!("2024-01-{:02} 00:00:00", i + 1), v))
-            .collect();
-        let meta = crate::features::FeatureStreamMeta {
-            data_meta: DatasetMeta {
-                symbol: "SPY".to_string(),
-                mode: DataMode::Daily,
-                source: DataSource::AlphaVantage,
-                price_field: PriceField::AdjustedClose,
-                session_convention: SessionConvention::FullDay,
-                fetched_at: None,
-                unit: None,
-            },
-            family: FeatureFamily::LogReturn,
-            scaling: ScalingPolicy::None,
-            n_warmup_dropped: 1,
-            n_obs: observations.len(),
-            first_ts: observations.first().map(|o| o.timestamp),
-            last_ts: observations.last().map(|o| o.timestamp),
-            session_aware: false,
-        };
-        FeatureStream {
-            observations,
-            meta,
-            scaler: crate::features::FittedScaler::fit(&[], ScalingPolicy::None),
-        }
-    }
 
     #[test]
     fn summarize_values_basic_moments() {
@@ -377,20 +285,5 @@ mod tests {
         let (hi, lo) = episode_duration_means(&x, 1.0);
         assert!(hi > 0.0);
         assert!(lo > 0.0);
-    }
-
-    #[test]
-    fn summarize_feature_stream_builds_profile() {
-        let stream = dummy_stream(&[0.1, 0.2, -0.1, 0.0, 0.3]);
-        let profile = summarize_feature_stream(
-            &stream,
-            CalibrationPartition::TrainOnly,
-            3,
-            1,
-            SummaryTargetSet::Full,
-        );
-        assert_eq!(profile.tag.asset, "SPY");
-        assert_eq!(profile.feature_family, FeatureFamily::LogReturn);
-        assert_eq!(profile.summary.n, 3);
     }
 }

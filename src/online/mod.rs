@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// Online (streaming) inference for the Gaussian Markov Switching Model.
 ///
 /// # Causal boundary
@@ -291,27 +290,6 @@ impl OnlineFilterState {
             t: new_t,
         })
     }
-
-    /// Process a contiguous slice of observations, advancing the state once
-    /// per element.
-    ///
-    /// Equivalent to calling [`step`](OnlineFilterState::step) in a loop.
-    /// Returns one [`OnlineStepResult`] per observation in order.
-    ///
-    /// # Errors
-    ///
-    /// Stops and returns an error on the first failing step.
-    pub fn step_batch(
-        &mut self,
-        obs: &[f64],
-        params: &ModelParams,
-    ) -> Result<Vec<OnlineStepResult>> {
-        let mut results = Vec::with_capacity(obs.len());
-        for &y in obs {
-            results.push(self.step(y, params)?);
-        }
-        Ok(results)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -483,7 +461,9 @@ mod tests {
         let offline_ll = filter(&params, &obs).unwrap().log_likelihood;
 
         let mut state = OnlineFilterState::new(&params);
-        state.step_batch(&obs, &params).unwrap();
+        for &y in &obs {
+            state.step(y, &params).unwrap();
+        }
 
         assert!(
             (state.cumulative_log_score - offline_ll).abs() < 1e-8,
@@ -547,37 +527,34 @@ mod tests {
         }
     }
 
-    /// step_batch produces the same sequence as calling step in a loop.
+    /// step in a loop produces deterministic causal output.
     #[test]
-    fn step_batch_equals_step_loop() {
+    fn step_loop_deterministic() {
         let params = k2_params();
         let obs = sim_obs(params.clone(), 80, SEED);
 
-        // Batch path.
-        let mut state_batch = OnlineFilterState::new(&params);
-        let batch_results = state_batch.step_batch(&obs, &params).unwrap();
+        let mut state_a = OnlineFilterState::new(&params);
+        let results_a: Vec<OnlineStepResult> =
+            obs.iter().map(|&y| state_a.step(y, &params).unwrap()).collect();
 
-        // Loop path.
-        let mut state_loop = OnlineFilterState::new(&params);
-        let loop_results: Vec<OnlineStepResult> = obs
-            .iter()
-            .map(|&y| state_loop.step(y, &params).unwrap())
-            .collect();
+        let mut state_b = OnlineFilterState::new(&params);
+        let results_b: Vec<OnlineStepResult> =
+            obs.iter().map(|&y| state_b.step(y, &params).unwrap()).collect();
 
-        assert_eq!(batch_results.len(), loop_results.len());
-        for (s, (b, l)) in batch_results.iter().zip(loop_results.iter()).enumerate() {
+        assert_eq!(results_a.len(), results_b.len());
+        for (s, (a, b)) in results_a.iter().zip(results_b.iter()).enumerate() {
             assert!(
-                (b.log_predictive - l.log_predictive).abs() < 1e-15,
-                "step {s}: batch log_predictive={} loop={}",
-                b.log_predictive,
-                l.log_predictive
+                (a.log_predictive - b.log_predictive).abs() < 1e-15,
+                "step {s}: a log_predictive={} b={}",
+                a.log_predictive,
+                b.log_predictive
             );
             for j in 0..params.k {
                 assert!(
-                    (b.filtered[j] - l.filtered[j]).abs() < 1e-15,
-                    "step {s}, regime {j}: batch filtered={} loop={}",
-                    b.filtered[j],
-                    l.filtered[j]
+                    (a.filtered[j] - b.filtered[j]).abs() < 1e-15,
+                    "step {s}, regime {j}: a={} b={}",
+                    a.filtered[j],
+                    b.filtered[j]
                 );
             }
         }
@@ -657,8 +634,10 @@ mod tests {
         let mut state_a = OnlineFilterState::new(&params);
         let mut state_b = OnlineFilterState::new(&params);
 
-        let results_a = state_a.step_batch(&obs, &params).unwrap();
-        let results_b = state_b.step_batch(&obs, &params).unwrap();
+        let results_a: Vec<OnlineStepResult> =
+            obs.iter().map(|&y| state_a.step(y, &params).unwrap()).collect();
+        let results_b: Vec<OnlineStepResult> =
+            obs.iter().map(|&y| state_b.step(y, &params).unwrap()).collect();
 
         for (s, (a, b)) in results_a.iter().zip(results_b.iter()).enumerate() {
             for j in 0..params.k {

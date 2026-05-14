@@ -179,14 +179,24 @@ impl CommodityCache {
 
             for (i, point) in response.data.iter().enumerate() {
                 appender
-                    .append_row(duckdb::params![symbol, interval, point.date, point.value, fetched_at])
+                    .append_row(duckdb::params![
+                        symbol,
+                        interval,
+                        point.date,
+                        point.value,
+                        fetched_at
+                    ])
                     .map_err(|e| anyhow::anyhow!("append_row failed at row {i}: {e}"))?;
             }
             appender
                 .flush()
                 .map_err(|e| anyhow::anyhow!("Appender flush failed: {e}"))?;
         }
-        println!("  [db] insert {} rows: {:.3}s", n, t.elapsed().as_secs_f32());
+        println!(
+            "  [db] insert {} rows: {:.3}s",
+            n,
+            t.elapsed().as_secs_f32()
+        );
         println!(
             "  [db] total store:  {:.3}s  ({} points)",
             total_start.elapsed().as_secs_f32(),

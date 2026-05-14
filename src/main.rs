@@ -18,8 +18,19 @@ mod reporting;
 fn is_direct_command(s: &str) -> bool {
     matches!(
         s,
-        "e2e" | "param-search" | "run-experiment" | "run-batch" | "run-real" | "calibrate"
-            | "compare-runs" | "optimize" | "inspect" | "status" | "help" | "generate-report"
+        "e2e"
+            | "param-search"
+            | "run-experiment"
+            | "run-batch"
+            | "run-real"
+            | "calibrate"
+            | "compare-runs"
+            | "compare-sim-vs-real"
+            | "optimize"
+            | "inspect"
+            | "status"
+            | "help"
+            | "generate-report"
     )
 }
 

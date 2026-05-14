@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// Real synthetic experiment backend.
 ///
 /// Wires the full math stack for synthetic (simulated) experiments:
@@ -18,8 +17,8 @@ use crate::model::simulate::simulate;
 
 use super::config::{DataConfig, EvaluationConfig, ExperimentConfig};
 use super::runner::{
-    DataBundle, ExperimentBackend, FeatureBundle, ModelArtifact, OnlineRunArtifact, RealEvalArtifact,
-    SyntheticEvalArtifact,
+    DataBundle, ExperimentBackend, FeatureBundle, ModelArtifact, OnlineRunArtifact,
+    RealEvalArtifact, SyntheticEvalArtifact,
 };
 use super::shared::{run_online_shared, train_or_load_model_shared};
 
@@ -65,7 +64,11 @@ impl ExperimentBackend for SyntheticBackend {
                 let train_n = (horizon as f64 * 0.70) as usize;
 
                 Ok(DataBundle {
-                    dataset_key: format!("synthetic:{}:{}", scenario_id, dataset_id.as_deref().unwrap_or("")),
+                    dataset_key: format!(
+                        "synthetic:{}:{}",
+                        scenario_id,
+                        dataset_id.as_deref().unwrap_or("")
+                    ),
                     n_observations: sim.observations.len(),
                     observations: sim.observations,
                     changepoint_truth: Some(changepoints),
@@ -73,6 +76,7 @@ impl ExperimentBackend for SyntheticBackend {
                     timestamps: vec![],
                     split_summary_json: None,
                     validation_report_json: None,
+                    synthetic_observations: Vec::new(),
                 })
             }
             DataConfig::Real { dataset_id, .. } => {
@@ -86,7 +90,13 @@ impl ExperimentBackend for SyntheticBackend {
                     timestamps: vec![],
                     split_summary_json: None,
                     validation_report_json: None,
+                    synthetic_observations: Vec::new(),
                 })
+            }
+            DataConfig::CalibratedSynthetic { .. } => {
+                anyhow::bail!(
+                    "SyntheticBackend does not handle CalibratedSynthetic; use SimToRealBackend"
+                );
             }
         }
     }
@@ -113,6 +123,7 @@ impl ExperimentBackend for SyntheticBackend {
                 observations: vec![],
                 train_n: 0,
                 timestamps: vec![],
+                synthetic_train_obs: Vec::new(),
             });
         }
 
@@ -124,8 +135,8 @@ impl ExperimentBackend for SyntheticBackend {
             ScalingPolicyConfig::ZScore | ScalingPolicyConfig::RobustZScore => {
                 let train_slice = &obs[..train_n];
                 let mean = train_slice.iter().sum::<f64>() / train_n as f64;
-                let var = train_slice.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
-                    / train_n as f64;
+                let var =
+                    train_slice.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / train_n as f64;
                 let std = var.sqrt().max(1e-10);
                 obs.iter().map(|x| (x - mean) / std).collect()
             }
@@ -137,6 +148,7 @@ impl ExperimentBackend for SyntheticBackend {
             observations: scaled,
             train_n,
             timestamps: vec![],
+            synthetic_train_obs: Vec::new(),
         })
     }
 
@@ -209,10 +221,26 @@ impl ExperimentBackend for SyntheticBackend {
         Ok(SyntheticEvalArtifact {
             n_events,
             coverage: if coverage.is_nan() { 0.0 } else { coverage },
-            precision_like: if precision_like.is_nan() { 0.0 } else { precision_like },
-            precision: Some(if metrics.precision.is_nan() { 0.0 } else { metrics.precision }),
-            recall: Some(if metrics.recall.is_nan() { 0.0 } else { metrics.recall }),
-            miss_rate: Some(if metrics.miss_rate.is_nan() { 0.0 } else { metrics.miss_rate }),
+            precision_like: if precision_like.is_nan() {
+                0.0
+            } else {
+                precision_like
+            },
+            precision: Some(if metrics.precision.is_nan() {
+                0.0
+            } else {
+                metrics.precision
+            }),
+            recall: Some(if metrics.recall.is_nan() {
+                0.0
+            } else {
+                metrics.recall
+            }),
+            miss_rate: Some(if metrics.miss_rate.is_nan() {
+                0.0
+            } else {
+                metrics.miss_rate
+            }),
             false_alarm_rate: Some(metrics.false_alarm_rate),
             delay_mean: if metrics.delay.n > 0 && !metrics.delay.mean.is_nan() {
                 Some(metrics.delay.mean)
@@ -239,50 +267,6 @@ impl ExperimentBackend for SyntheticBackend {
         // Real data mode not yet implemented in this backend.
         anyhow::bail!("SyntheticBackend does not support real-data evaluation");
     }
-}
-
-// =========================================================================
-// Helper: build initial ModelParams for EM from quantile splitting
-// =========================================================================
-
-fn init_params_from_obs(obs: &[f64], k: usize) -> anyhow::Result<ModelParams> {
-    if obs.is_empty() || k < 2 {
-        anyhow::bail!("init_params_from_obs: need at least 1 observation and k >= 2");
-    }
-
-    let mut sorted = obs.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let n = sorted.len();
-
-    // Split into k quantile groups and compute per-group mean/var.
-    let chunk = (n / k).max(1);
-    let mut means = Vec::with_capacity(k);
-    let mut variances = Vec::with_capacity(k);
-
-    for j in 0..k {
-        let start = j * chunk;
-        let end = if j == k - 1 { n } else { (j + 1) * chunk };
-        let slice = &sorted[start..end];
-        let m = slice.iter().sum::<f64>() / slice.len() as f64;
-        let v = slice.iter().map(|x| (x - m).powi(2)).sum::<f64>() / slice.len() as f64;
-        means.push(m);
-        variances.push(v.max(1e-6));
-    }
-
-    // Uniform initial distribution.
-    let pi = vec![1.0 / k as f64; k];
-
-    // High self-transition (0.9 on diagonal), uniform off-diagonal.
-    let off_diag = 0.1 / (k - 1) as f64;
-    let transition_rows: Vec<Vec<f64>> = (0..k)
-        .map(|i| {
-            (0..k)
-                .map(|j| if i == j { 0.9 } else { off_diag })
-                .collect()
-        })
-        .collect();
-
-    Ok(ModelParams::new(pi, transition_rows, means, variances))
 }
 
 // =========================================================================
@@ -359,6 +343,7 @@ fn regenerate_changepoints(cfg: &ExperimentConfig) -> anyhow::Result<(Vec<usize>
             Ok((changepoints, horizon))
         }
         DataConfig::Real { .. } => Ok((vec![], 0)),
+        DataConfig::CalibratedSynthetic { .. } => Ok((vec![], 0)),
     }
 }
 

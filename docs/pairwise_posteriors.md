@@ -112,8 +112,6 @@ zero — identical to the guard in the backward smoother.
 
 ```rust
 pub struct PairwiseResult {
-    pub t: usize,                            // number of observations T
-    pub k: usize,                            // number of regimes K
     pub xi: Vec<Vec<Vec<f64>>>,              // xi[s][i][j], shape (T-1)×K×K
     pub expected_transitions: Vec<Vec<f64>>, // N_ij^exp, shape K×K
 }

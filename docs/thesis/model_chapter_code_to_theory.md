@@ -133,7 +133,7 @@ $$S_1 \sim \pi, \quad S_t \mid S_{t-1} = i \sim A_{i,\cdot}, \quad y_t \mid S_t 
 
 | Type / function | Role |
 |---|---|
-| `SimulationResult { t, k, states, observations, params }` | Full sample: hidden path + observations |
+| `SimulationResult { states, observations }` | Full sample: hidden path + observations |
 | `SimulationResult::changepoints() -> Vec<usize>` | 1-based indices where $S_t \neq S_{t-1}$; used as ground truth for benchmarking |
 | `simulate(params, T, rng) -> SimulationResult` | Standard draw from the model |
 | `simulate_with_jump(params, T, JumpParams, rng)` | Adds shock contamination $N(0, (\text{mult}\cdot\sigma_j)^2)$ with probability `prob` per bar |

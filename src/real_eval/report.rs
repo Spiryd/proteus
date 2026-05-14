@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use serde::{Deserialize, Serialize};
 
 use crate::data::Observation;
@@ -23,38 +22,6 @@ pub struct RealEvalResult {
     pub n_alarms: usize,
     pub route_a: ProxyEventEvaluationResult,
     pub route_b: SegmentationEvaluationResult,
-}
-
-/// Table/plot-friendly compact summary.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RealEvalSummaryRow {
-    pub asset: String,
-    pub feature_label: String,
-    pub detector_label: String,
-    pub n_obs: usize,
-    pub n_alarms: usize,
-    pub event_coverage: f64,
-    pub alarm_relevance: f64,
-    pub mean_delay_bars: f64,
-    pub n_segments: usize,
-    pub coherence_score: f64,
-}
-
-impl RealEvalResult {
-    pub fn summary_row(&self) -> RealEvalSummaryRow {
-        RealEvalSummaryRow {
-            asset: self.meta.asset.clone(),
-            feature_label: self.meta.feature_label.clone(),
-            detector_label: self.meta.detector_label.clone(),
-            n_obs: self.n_observations,
-            n_alarms: self.n_alarms,
-            event_coverage: self.route_a.event_coverage,
-            alarm_relevance: self.route_a.alarm_relevance,
-            mean_delay_bars: self.route_a.mean_delay_bars,
-            n_segments: self.route_b.global.n_segments,
-            coherence_score: self.route_b.global.coherence_score,
-        }
-    }
 }
 
 /// Evaluate real-data detector output using Route A + Route B only.
@@ -132,9 +99,8 @@ mod tests {
         )
         .unwrap();
 
-        let row = out.summary_row();
-        assert_eq!(row.asset, "SPY");
-        assert_eq!(row.n_alarms, 1);
-        assert_eq!(row.n_segments, 2);
+        assert_eq!(out.meta.asset, "SPY");
+        assert_eq!(out.n_alarms, 1);
+        assert_eq!(out.route_b.global.n_segments, 2);
     }
 }

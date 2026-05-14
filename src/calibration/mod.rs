@@ -16,14 +16,15 @@ pub mod summary;
 pub mod verify;
 
 pub use mapping::{
-    CalibratedSyntheticParams, CalibrationMappingConfig, JumpContamination, MeanPolicy,
-    VariancePolicy, calibrate_to_synthetic,
+    CalibratedSyntheticParams, CalibrationMappingConfig, CalibrationStrategy, JumpContamination,
+    MeanPolicy, VariancePolicy, calibrate_to_synthetic,
 };
 pub use report::{CalibrationReport, CalibrationReportView, run_calibration_workflow};
 pub use summary::{
     CalibrationDatasetTag, CalibrationPartition, EmpiricalCalibrationProfile, EmpiricalSummary,
-    SummaryTargetSet, summarize_feature_stream, summarize_observation_values,
+    SummaryTargetSet, summarize_observation_values,
 };
 pub use verify::{
-    CalibrationDiff, CalibrationVerification, VerificationTolerance, verify_calibration,
+    CalibrationDiff, CalibrationVerification, DEFAULT_SCALE_TOLERANCE, ScaleConsistencyCheck,
+    VerificationTolerance, scale_consistency_check,
 };

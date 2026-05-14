@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// Causal, trailing-window rolling statistics for financial feature engineering.
 ///
 /// # Trailing-window invariant (causality)
@@ -93,16 +92,6 @@ impl RollingStats {
         }
     }
 
-    /// Number of values currently in the buffer (0..=window).
-    pub fn count(&self) -> usize {
-        if self.full { self.window } else { self.head }
-    }
-
-    /// `true` iff the buffer contains exactly `window` values (warmup done).
-    pub fn is_ready(&self) -> bool {
-        self.full
-    }
-
     /// Rolling mean $\bar r_t^{(w)}$.
     ///
     /// Returns `None` during warmup.
@@ -120,21 +109,6 @@ impl RollingStats {
         let m = self.mean()?;
         let var = self.buf.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / self.window as f64;
         Some(var.sqrt())
-    }
-
-    /// Current slice of buffered values (length = `count()`).
-    /// Intended for testing; not required for normal feature computation.
-    #[cfg(test)]
-    pub fn values(&self) -> Vec<f64> {
-        if self.full {
-            // rotate so index 0 is oldest
-            let mut v = Vec::with_capacity(self.window);
-            v.extend_from_slice(&self.buf[self.head..]);
-            v.extend_from_slice(&self.buf[..self.head]);
-            v
-        } else {
-            self.buf[..self.head].to_vec()
-        }
     }
 }
 
@@ -316,7 +290,6 @@ mod tests {
         let mut rs = RollingStats::new(3);
         rs.push(1.0);
         rs.push(2.0);
-        assert!(!rs.is_ready());
         assert!(rs.vol().is_none());
         assert!(rs.mean().is_none());
     }
@@ -327,7 +300,6 @@ mod tests {
         rs.push(1.0);
         rs.push(2.0);
         rs.push(3.0);
-        assert!(rs.is_ready());
         // mean should be 2.0
         assert!((rs.mean().unwrap() - 2.0).abs() < 1e-12);
     }
@@ -361,10 +333,9 @@ mod tests {
         rs.push(1.0);
         rs.push(2.0);
         rs.push(3.0);
-        assert!(rs.is_ready());
+        assert!(rs.mean().is_some());
         rs.reset();
-        assert!(!rs.is_ready());
-        assert_eq!(rs.count(), 0);
+        assert!(rs.mean().is_none());
     }
 
     #[test]

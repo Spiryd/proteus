@@ -29,9 +29,10 @@ use chrono::NaiveDate;
 
 use crate::alphavantage::commodity::{CommodityEndpoint, Interval};
 use crate::cache::CommodityCache;
-use crate::data::{CleanSeries, DataMode, DataSource, DatasetMeta, Observation, PriceField,
-                  SessionConvention};
 use crate::data::split::{PartitionedSeries, SplitConfig};
+use crate::data::{
+    CleanSeries, DataMode, DataSource, DatasetMeta, Observation, PriceField, SessionConvention,
+};
 use crate::features::family::FeatureFamily;
 use crate::features::scaler::ScalingPolicy;
 use crate::features::stream::{FeatureConfig as StreamFeatureConfig, FeatureStream};
@@ -40,8 +41,8 @@ use crate::real_eval::route_a::{PointMatchPolicy, ProxyEvent, RouteAConfig};
 use crate::real_eval::route_b::{RouteBConfig, ShortSegmentPolicy};
 
 use super::config::{
-    DataConfig, EvaluationConfig, ExperimentConfig, FeatureFamilyConfig,
-    RealFrequency, ScalingPolicyConfig,
+    DataConfig, EvaluationConfig, ExperimentConfig, FeatureFamilyConfig, RealFrequency,
+    ScalingPolicyConfig,
 };
 use super::runner::{
     DataBundle, ExperimentBackend, FeatureBundle, ModelArtifact, OnlineRunArtifact,
@@ -161,7 +162,9 @@ impl RealBackend {
             && !start_str.is_empty()
         {
             let start = NaiveDate::parse_from_str(start_str, "%Y-%m-%d")
-                .map_err(|_| anyhow::anyhow!("Invalid date_start '{start_str}': expected YYYY-MM-DD"))?
+                .map_err(|_| {
+                    anyhow::anyhow!("Invalid date_start '{start_str}': expected YYYY-MM-DD")
+                })?
                 .and_hms_opt(0, 0, 0)
                 .unwrap();
             series.observations.retain(|o| o.timestamp >= start);
@@ -180,7 +183,9 @@ impl RealBackend {
         if series.observations.len() < 10 {
             anyhow::bail!(
                 "Too few observations after date filtering for {} ({}): {} bars found, minimum is 10.",
-                asset, interval.as_str(), series.observations.len()
+                asset,
+                interval.as_str(),
+                series.observations.len()
             );
         }
 
@@ -192,7 +197,9 @@ impl RealBackend {
             if series.observations.len() < 10 {
                 anyhow::bail!(
                     "Too few observations after RTH filter for {} ({}): {} bars found.",
-                    asset, interval.as_str(), series.observations.len()
+                    asset,
+                    interval.as_str(),
+                    series.observations.len()
                 );
             }
         }
@@ -206,12 +213,13 @@ impl RealBackend {
             FeatureFamilyConfig::LogReturn => FeatureFamily::LogReturn,
             FeatureFamilyConfig::AbsReturn => FeatureFamily::AbsReturn,
             FeatureFamilyConfig::SquaredReturn => FeatureFamily::SquaredReturn,
-            FeatureFamilyConfig::RollingVol { window, session_reset } => {
-                FeatureFamily::RollingVol {
-                    window: *window,
-                    session_reset: *session_reset,
-                }
-            }
+            FeatureFamilyConfig::RollingVol {
+                window,
+                session_reset,
+            } => FeatureFamily::RollingVol {
+                window: *window,
+                session_reset: *session_reset,
+            },
             FeatureFamilyConfig::StandardizedReturn {
                 window,
                 epsilon,
@@ -241,14 +249,10 @@ impl RealBackend {
             return Ok(vec![]);
         }
         let json = std::fs::read_to_string(proxy_events_path).map_err(|e| {
-            anyhow::anyhow!(
-                "Cannot read proxy events file '{proxy_events_path}': {e}"
-            )
+            anyhow::anyhow!("Cannot read proxy events file '{proxy_events_path}': {e}")
         })?;
         serde_json::from_str(&json).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to parse proxy events JSON from '{proxy_events_path}': {e}"
-            )
+            anyhow::anyhow!("Failed to parse proxy events JSON from '{proxy_events_path}': {e}")
         })
     }
 }
@@ -270,12 +274,28 @@ impl ExperimentBackend for RealBackend {
     /// will convert raw prices to model-ready observations (log-returns, etc.).
     fn resolve_data(&self, cfg: &ExperimentConfig) -> anyhow::Result<DataBundle> {
         let (asset, frequency, dataset_id, date_start, date_end) = match &cfg.data {
-            DataConfig::Real { asset, frequency, dataset_id, date_start, date_end } => {
-                (asset.as_str(), frequency, dataset_id.as_str(), date_start.as_deref(), date_end.as_deref())
-            }
+            DataConfig::Real {
+                asset,
+                frequency,
+                dataset_id,
+                date_start,
+                date_end,
+            } => (
+                asset.as_str(),
+                frequency,
+                dataset_id.as_str(),
+                date_start.as_deref(),
+                date_end.as_deref(),
+            ),
             DataConfig::Synthetic { dataset_id, .. } => {
                 anyhow::bail!(
                     "RealBackend::resolve_data called with Synthetic DataConfig (dataset_id={dataset_id:?})"
+                );
+            }
+            DataConfig::CalibratedSynthetic { .. } => {
+                anyhow::bail!(
+                    "RealBackend::resolve_data called with CalibratedSynthetic DataConfig; \
+                     use SimToRealBackend"
                 );
             }
         };
@@ -308,10 +328,14 @@ impl ExperimentBackend for RealBackend {
                 "from": g.from.to_string(),
                 "to": g.to.to_string(),
             })).collect::<Vec<_>>(),
-        })).ok();
+        }))
+        .ok();
 
         // Build the chronological split (consumes series).
-        let split_cfg = SplitConfig { train_end: train_end_ts, val_end: val_end_ts };
+        let split_cfg = SplitConfig {
+            train_end: train_end_ts,
+            val_end: val_end_ts,
+        };
         let partitioned = PartitionedSeries::from_series(series, split_cfg);
         let train_n = partitioned.train.len();
 
@@ -327,7 +351,8 @@ impl ExperimentBackend for RealBackend {
             "train_start": partitioned.train.first().map(|o| o.timestamp.to_string()),
             "val_start": partitioned.validation.first().map(|o| o.timestamp.to_string()),
             "test_start": partitioned.test.first().map(|o| o.timestamp.to_string()),
-        })).ok();
+        }))
+        .ok();
 
         let interval = Self::to_interval(frequency);
         Ok(DataBundle {
@@ -339,6 +364,7 @@ impl ExperimentBackend for RealBackend {
             timestamps,
             split_summary_json,
             validation_report_json,
+            synthetic_observations: Vec::new(),
         })
     }
 
@@ -363,6 +389,7 @@ impl ExperimentBackend for RealBackend {
                 observations: vec![],
                 train_n: 0,
                 timestamps: vec![],
+                synthetic_train_obs: Vec::new(),
             });
         }
 
@@ -371,12 +398,20 @@ impl ExperimentBackend for RealBackend {
             .timestamps
             .iter()
             .zip(data.observations.iter())
-            .map(|(&ts, &v)| Observation { timestamp: ts, value: v })
+            .map(|(&ts, &v)| Observation {
+                timestamp: ts,
+                value: v,
+            })
             .collect();
 
         // Build DatasetMeta from config.
         let (asset, frequency, _) = match &cfg.data {
-            DataConfig::Real { asset, frequency, dataset_id, .. } => (asset, frequency, dataset_id),
+            DataConfig::Real {
+                asset,
+                frequency,
+                dataset_id,
+                ..
+            } => (asset, frequency, dataset_id),
             _ => anyhow::bail!("RealBackend::build_features: expected Real DataConfig"),
         };
         let endpoint: CommodityEndpoint = asset.parse()?;
@@ -410,9 +445,10 @@ impl ExperimentBackend for RealBackend {
 
         // Compute training partition size: after warmup trimming, the number
         // of feature observations in train = data.train_n minus warmup bars.
-        let actual_train_n = stream.meta.n_obs.min(
-            data.train_n.saturating_sub(stream.meta.n_warmup_dropped)
-        );
+        let actual_train_n = stream
+            .meta
+            .n_obs
+            .min(data.train_n.saturating_sub(stream.meta.n_warmup_dropped));
 
         let feature_timestamps: Vec<chrono::NaiveDateTime> = stream.timestamps();
         let values = stream.values();
@@ -424,6 +460,7 @@ impl ExperimentBackend for RealBackend {
             observations: values,
             train_n: actual_train_n,
             timestamps: feature_timestamps,
+            synthetic_train_obs: Vec::new(),
         })
     }
 
@@ -487,37 +524,45 @@ impl ExperimentBackend for RealBackend {
         cfg: &ExperimentConfig,
         online: &OnlineRunArtifact,
     ) -> anyhow::Result<RealEvalArtifact> {
-        let (asset, frequency, date_start, date_end, proxy_events_path,
-             route_a_pre, route_a_post, route_a_causal, route_b_min_seg) =
-            match &cfg.data {
-                DataConfig::Real { asset, frequency, date_start, date_end, .. } => {
-                    match &cfg.evaluation {
-                        EvaluationConfig::Real {
-                            proxy_events_path,
-                            route_a_point_pre_bars,
-                            route_a_point_post_bars,
-                            route_a_causal_only,
-                            route_b_min_segment_len,
-                        } => (
-                            asset.as_str(),
-                            frequency,
-                            date_start.as_deref(),
-                            date_end.as_deref(),
-                            proxy_events_path.as_str(),
-                            *route_a_point_pre_bars,
-                            *route_a_point_post_bars,
-                            *route_a_causal_only,
-                            *route_b_min_segment_len,
-                        ),
-                        _ => anyhow::bail!(
-                            "RealBackend::evaluate_real: EvaluationConfig must be Real"
-                        ),
-                    }
-                }
-                _ => anyhow::bail!(
-                    "RealBackend::evaluate_real: DataConfig must be Real"
+        let (
+            asset,
+            frequency,
+            date_start,
+            date_end,
+            proxy_events_path,
+            route_a_pre,
+            route_a_post,
+            route_a_causal,
+            route_b_min_seg,
+        ) = match &cfg.data {
+            DataConfig::Real {
+                asset,
+                frequency,
+                date_start,
+                date_end,
+                ..
+            } => match &cfg.evaluation {
+                EvaluationConfig::Real {
+                    proxy_events_path,
+                    route_a_point_pre_bars,
+                    route_a_point_post_bars,
+                    route_a_causal_only,
+                    route_b_min_segment_len,
+                } => (
+                    asset.as_str(),
+                    frequency,
+                    date_start.as_deref(),
+                    date_end.as_deref(),
+                    proxy_events_path.as_str(),
+                    *route_a_point_pre_bars,
+                    *route_a_point_post_bars,
+                    *route_a_causal_only,
+                    *route_b_min_segment_len,
                 ),
-            };
+                _ => anyhow::bail!("RealBackend::evaluate_real: EvaluationConfig must be Real"),
+            },
+            _ => anyhow::bail!("RealBackend::evaluate_real: DataConfig must be Real"),
+        };
 
         // Re-load and clean the series (same as resolve_data).
         let series = self.load_clean_series(asset, frequency, date_start, date_end)?;
@@ -737,11 +782,11 @@ mod tests {
         let backend = RealBackend::new("data/commodities.duckdb");
         let cfg = make_real_cfg("");
         let dummy_online = OnlineRunArtifact {
-            n_steps: 0,
             n_alarms: 0,
             alarm_indices: vec![],
             score_trace: vec![],
             regime_posteriors: vec![],
+            changepoint_truth: None,
         };
         assert!(backend.evaluate_synthetic(&cfg, &dummy_online).is_err());
     }
@@ -779,6 +824,7 @@ mod tests {
             timestamps: vec![],
             split_summary_json: None,
             validation_report_json: None,
+            synthetic_observations: Vec::new(),
         };
         let result = backend.build_features(&cfg, &data);
         assert!(result.is_ok());
@@ -794,8 +840,15 @@ mod tests {
             FeatureFamilyConfig::LogReturn,
             FeatureFamilyConfig::AbsReturn,
             FeatureFamilyConfig::SquaredReturn,
-            FeatureFamilyConfig::RollingVol { window: 5, session_reset: false },
-            FeatureFamilyConfig::StandardizedReturn { window: 10, epsilon: 1e-8, session_reset: true },
+            FeatureFamilyConfig::RollingVol {
+                window: 5,
+                session_reset: false,
+            },
+            FeatureFamilyConfig::StandardizedReturn {
+                window: 10,
+                epsilon: 1e-8,
+                session_reset: true,
+            },
         ];
         for f in &families {
             // Should not panic.
@@ -806,9 +859,18 @@ mod tests {
     /// Scaling policy conversion covers all variants.
     #[test]
     fn scaling_policy_conversion_covers_all_variants() {
-        assert!(matches!(RealBackend::to_scaling_policy(&ScalingPolicyConfig::None), ScalingPolicy::None));
-        assert!(matches!(RealBackend::to_scaling_policy(&ScalingPolicyConfig::ZScore), ScalingPolicy::ZScore));
-        assert!(matches!(RealBackend::to_scaling_policy(&ScalingPolicyConfig::RobustZScore), ScalingPolicy::RobustZScore));
+        assert!(matches!(
+            RealBackend::to_scaling_policy(&ScalingPolicyConfig::None),
+            ScalingPolicy::None
+        ));
+        assert!(matches!(
+            RealBackend::to_scaling_policy(&ScalingPolicyConfig::ZScore),
+            ScalingPolicy::ZScore
+        ));
+        assert!(matches!(
+            RealBackend::to_scaling_policy(&ScalingPolicyConfig::RobustZScore),
+            ScalingPolicy::RobustZScore
+        ));
     }
 
     /// Date filtering with both bounds removes out-of-range bars.
@@ -826,13 +888,26 @@ mod tests {
 
         // 20 daily points: 2023-01-02 to 2023-01-27 (weekdays only).
         let dates = [
-            "2023-01-02 00:00:00", "2023-01-03 00:00:00", "2023-01-04 00:00:00",
-            "2023-01-05 00:00:00", "2023-01-06 00:00:00", "2023-01-09 00:00:00",
-            "2023-01-10 00:00:00", "2023-01-11 00:00:00", "2023-01-12 00:00:00",
-            "2023-01-13 00:00:00", "2023-01-17 00:00:00", "2023-01-18 00:00:00",
-            "2023-01-19 00:00:00", "2023-01-20 00:00:00", "2023-01-23 00:00:00",
-            "2023-01-24 00:00:00", "2023-01-25 00:00:00", "2023-01-26 00:00:00",
-            "2023-01-27 00:00:00", "2023-01-30 00:00:00",
+            "2023-01-02 00:00:00",
+            "2023-01-03 00:00:00",
+            "2023-01-04 00:00:00",
+            "2023-01-05 00:00:00",
+            "2023-01-06 00:00:00",
+            "2023-01-09 00:00:00",
+            "2023-01-10 00:00:00",
+            "2023-01-11 00:00:00",
+            "2023-01-12 00:00:00",
+            "2023-01-13 00:00:00",
+            "2023-01-17 00:00:00",
+            "2023-01-18 00:00:00",
+            "2023-01-19 00:00:00",
+            "2023-01-20 00:00:00",
+            "2023-01-23 00:00:00",
+            "2023-01-24 00:00:00",
+            "2023-01-25 00:00:00",
+            "2023-01-26 00:00:00",
+            "2023-01-27 00:00:00",
+            "2023-01-30 00:00:00",
         ];
         let data: Vec<CommodityDataPoint> = dates
             .iter()
@@ -909,7 +984,10 @@ mod tests {
 
         let backend = RealBackend::new(&tmp);
         let cfg = ExperimentConfig {
-            meta: RunMetaConfig { run_label: "t".to_string(), notes: None },
+            meta: RunMetaConfig {
+                run_label: "t".to_string(),
+                notes: None,
+            },
             mode: ExperimentMode::Real,
             data: DataConfig::Real {
                 asset: "wti".to_string(),
@@ -980,12 +1058,9 @@ mod tests {
                 // Simple random walk: start at 400, ±1 % per day.
                 let price = 400.0 * (1.0 + 0.001 * (i as f64 % 17.0 - 8.0));
                 CommodityDataPoint {
-                    date: chrono::DateTime::from_timestamp(
-                        1577836800 + i as i64 * 86400,
-                        0,
-                    )
-                    .unwrap()
-                    .naive_utc(),
+                    date: chrono::DateTime::from_timestamp(1577836800 + i as i64 * 86400, 0)
+                        .unwrap()
+                        .naive_utc(),
                     value: price,
                 }
             })
@@ -1001,7 +1076,10 @@ mod tests {
 
         let backend = RealBackend::new(&tmp);
         let cfg = ExperimentConfig {
-            meta: RunMetaConfig { run_label: "full_pipeline_test".to_string(), notes: None },
+            meta: RunMetaConfig {
+                run_label: "full_pipeline_test".to_string(),
+                notes: None,
+            },
             mode: ExperimentMode::Real,
             data: DataConfig::Real {
                 asset: "spy".to_string(),

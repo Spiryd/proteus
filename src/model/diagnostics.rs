@@ -121,9 +121,7 @@ impl DiagnosticWarning {
                 regime,
                 occupancy_share,
             } => {
-                format!(
-                    "Regime {regime} occupancy share {occupancy_share:.4} is nearly zero"
-                )
+                format!("Regime {regime} occupancy share {occupancy_share:.4} is nearly zero")
             }
             Self::EmNonMonotonicity { iteration, drop } => {
                 format!("EM non-monotonicity at iteration {iteration}: drop = {drop:.2e}")
@@ -392,15 +390,9 @@ pub fn compare_runs(results: &[EmResult], obs: &[f64]) -> Result<MultiStartSumma
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let best_ll = runs
-        .first()
-        .map_or(f64::NEG_INFINITY, |r| r.log_likelihood);
-    let runner_up_ll = runs
-        .get(1)
-        .map_or(f64::NEG_INFINITY, |r| r.log_likelihood);
-    let worst_ll = runs
-        .last()
-        .map_or(f64::NEG_INFINITY, |r| r.log_likelihood);
+    let best_ll = runs.first().map_or(f64::NEG_INFINITY, |r| r.log_likelihood);
+    let runner_up_ll = runs.get(1).map_or(f64::NEG_INFINITY, |r| r.log_likelihood);
+    let worst_ll = runs.last().map_or(f64::NEG_INFINITY, |r| r.log_likelihood);
 
     let ll_spread = if runs.len() > 1 {
         best_ll - worst_ll

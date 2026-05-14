@@ -265,6 +265,91 @@ The `DataConfig::Real` section of each registry entry controls which asset, freq
 
 ---
 
+## 9b. SimToReal Mode
+
+`ExperimentMode::SimToReal` is the sim-to-real bridge introduced in Phase 17′:
+the model is **trained on a calibrated synthetic stream** and **evaluated on
+the corresponding real series**, providing direct empirical support for the
+thesis claim of "training on synthetic, testing on real".
+
+### Data variant
+
+`DataConfig::CalibratedSynthetic` carries both the real source descriptor and
+the calibration mapping:
+
+```rust
+DataConfig::CalibratedSynthetic {
+    real_asset: "SPY".to_string(),
+    real_frequency: RealFrequency::Daily,
+    real_dataset_id: "spy_daily".to_string(),
+    real_date_start: Some("2018-01-01".to_string()),
+    real_date_end: None,
+    horizon: 2000,
+    mapping: CalibrationMappingConfig {
+        k: 2,
+        horizon: 2000,
+        strategy: CalibrationStrategy::QuickEm { max_iter: 100, tol: 1e-6 },
+        ..CalibrationMappingConfig::default()
+    },
+    dataset_id: Some("simreal_spy_daily".to_string()),
+}
+```
+
+The pipeline:
+
+1. Loads the real series from the DuckDB cache.
+2. Runs the calibration mapping (Quick-EM by default) on the real **training**
+   partition to obtain a `ModelParams` $\theta^*$.
+3. Simulates a synthetic stream of length `horizon` from $\theta^*$.
+4. Fits a `FittedScaler` on the real-train log-returns and applies it to
+   **both** the real and synthetic streams (the one-sided scale-consistency
+   policy; see `docs/synthetic_to_real_calibration.md` §8.3).
+5. Trains a fresh EM only on the scaled synthetic stream.
+6. Runs the synthetic-trained `FrozenModel` over the real validation+test
+   partition.
+7. Evaluates via Route A (proxy events) and Route B (segmentation coherence)
+   exactly like `RealBackend`.
+
+### SimToReal-mode artifacts
+
+In addition to the standard real-mode artifacts, a SimToReal run writes:
+
+- `synthetic_training_provenance.json` — empirical calibration profile,
+  strategy used, calibrated `ModelParams`, scale-consistency check result,
+  number of synthetic and real-train observations.  This replaces
+  `split_summary.json` (which carries the same blob for `SimToReal` mode).
+- `sim_to_real_summary.json` — collates `train_source` / `test_source`
+  labels, `model_params_synthetic_trained`, `eval_real_metrics` and the
+  embedded provenance for downstream figure pipelines.
+
+### Registry entries
+
+The canonical SimToReal experiment is `simreal_spy_daily_hard_switch`
+(SPY daily, Quick-EM calibration over 2000 synthetic bars, HardSwitch
+detector).  Launch with:
+
+```
+cargo run -- run-real --id simreal_spy_daily_hard_switch
+```
+
+### Train-on-real comparator
+
+`compare-sim-vs-real --id <simreal_id>` runs the registered SimToReal
+experiment **and** a derived "train-on-real" variant (same data series,
+features, model, detector, evaluation; mode flipped to `Real` and the data
+config flattened to `DataConfig::Real { … }`).  The comparator emits
+`sim_vs_real_comparison.json` with the two evaluation metric tuples
+side-by-side — the artifact that quantifies the sim-to-real generalisation
+gap for thesis figures.
+
+```
+cargo run -- compare-sim-vs-real --id simreal_spy_daily_hard_switch \
+    --cache data/commodities.duckdb \
+    --save ./runs/comparison/simreal_spy_daily
+```
+
+---
+
 ## 11. Canonical Run Workflow
 
 Given `ExperimentConfig`:
@@ -418,7 +503,8 @@ is not invoked during normal `e2e`, `run-real`, or `optimize` runs.
 | `run-experiment` | `DryRunBackend` | No — all metrics are mocks |
 | `run-batch` | `DryRunBackend` | No — all metrics are mocks |
 | `e2e` | `SyntheticBackend` | Yes |
-| `run-real` | `RealBackend` | Yes |
+| `run-real` | `RealBackend` / `SimToRealBackend` | Yes |
+| `compare-sim-vs-real` | `SimToRealBackend` + `RealBackend` | Yes |
 | `optimize` | `RealBackend` | Yes |
 
 `run-experiment` and `run-batch` are **pipeline validation** tools: they

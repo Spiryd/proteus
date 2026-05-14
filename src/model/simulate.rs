@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use rand::Rng;
 use rand_distr::{Distribution, Normal, Uniform, weighted::WeightedIndex};
 
@@ -24,16 +23,10 @@ pub struct JumpParams {
 /// be used as ground truth when testing filtering, smoothing, and EM.
 #[derive(Debug, Clone)]
 pub struct SimulationResult {
-    /// T — number of time steps.
-    pub t: usize,
-    /// K — number of regimes (copied from params for convenience).
-    pub k: usize,
     /// Hidden regime path S₁,…,S_T (0-based indices into 0..k).
     pub states: Vec<usize>,
     /// Observation sequence y₁,…,y_T.
     pub observations: Vec<f64>,
-    /// The parameter set that generated this sample.
-    pub params: ModelParams,
 }
 
 impl SimulationResult {
@@ -110,14 +103,10 @@ pub fn simulate(
 
     let states = simulate_hidden_path(&params, t, rng);
     let observations = simulate_observations(&params, &states, rng);
-    let k = params.k;
 
     Ok(SimulationResult {
-        t,
-        k,
         states,
         observations,
-        params,
     })
 }
 
@@ -153,13 +142,9 @@ pub fn simulate_with_jump(
         }
     }
 
-    let k = params.k;
     Ok(SimulationResult {
-        t,
-        k,
         states,
         observations,
-        params,
     })
 }
 
@@ -298,7 +283,7 @@ mod tests {
         let result = simulate(params, 50_000, &mut rng).unwrap();
 
         for j in 0..2 {
-            let obs_j: Vec<f64> = (0..result.t)
+            let obs_j: Vec<f64> = (0..result.states.len())
                 .filter(|&i| result.states[i] == j)
                 .map(|i| result.observations[i])
                 .collect();
@@ -328,7 +313,7 @@ mod tests {
         let result = simulate(params, 50_000, &mut rng).unwrap();
 
         for j in 0..2 {
-            let obs_j: Vec<f64> = (0..result.t)
+            let obs_j: Vec<f64> = (0..result.states.len())
                 .filter(|&i| result.states[i] == j)
                 .map(|i| result.observations[i])
                 .collect();
@@ -412,13 +397,10 @@ mod tests {
     /// Empty state path → no changepoints.
     #[test]
     fn changepoints_empty_states() {
-        let params = persistent_2state();
+        let _params = persistent_2state();
         let result = SimulationResult {
-            t: 0,
-            k: 2,
             states: vec![],
             observations: vec![],
-            params,
         };
         assert!(result.changepoints().is_empty());
     }
@@ -426,13 +408,10 @@ mod tests {
     /// Single-observation path → no changepoints (nothing to compare against).
     #[test]
     fn changepoints_single_observation() {
-        let params = persistent_2state();
+        let _params = persistent_2state();
         let result = SimulationResult {
-            t: 1,
-            k: 2,
             states: vec![0],
             observations: vec![1.0],
-            params,
         };
         assert!(result.changepoints().is_empty());
     }
@@ -440,13 +419,10 @@ mod tests {
     /// Constant regime path → no changepoints.
     #[test]
     fn changepoints_no_switch() {
-        let params = persistent_2state();
+        let _params = persistent_2state();
         let result = SimulationResult {
-            t: 5,
-            k: 2,
             states: vec![0, 0, 0, 0, 0],
             observations: vec![0.0; 5],
-            params,
         };
         assert!(result.changepoints().is_empty());
     }
@@ -454,14 +430,11 @@ mod tests {
     /// Alternating regime path → changepoints at every step (1-based t=2..=T).
     #[test]
     fn changepoints_every_step() {
-        let params = switching_2state();
+        let _params = switching_2state();
         let states = vec![0, 1, 0, 1, 0]; // 5 steps, 4 switches at t=2,3,4,5
         let result = SimulationResult {
-            t: 5,
-            k: 2,
             states,
             observations: vec![0.0; 5],
-            params,
         };
         assert_eq!(result.changepoints(), vec![2, 3, 4, 5]);
     }
@@ -469,14 +442,11 @@ mod tests {
     /// Known manual path: switch only at t=4 (0-based index 3).
     #[test]
     fn changepoints_single_known_switch() {
-        let params = persistent_2state();
+        let _params = persistent_2state();
         let states = vec![0, 0, 0, 1, 1]; // switch at index 3 → t=4 (1-based)
         let result = SimulationResult {
-            t: 5,
-            k: 2,
             states,
             observations: vec![0.0; 5],
-            params,
         };
         assert_eq!(result.changepoints(), vec![4]);
     }
@@ -484,14 +454,11 @@ mod tests {
     /// Indices are 1-based: the first possible changepoint is at t=2.
     #[test]
     fn changepoints_are_1based() {
-        let params = switching_2state();
+        let _params = switching_2state();
         let states = vec![0, 1]; // switch immediately at t=2
         let result = SimulationResult {
-            t: 2,
-            k: 2,
             states,
             observations: vec![0.0; 2],
-            params,
         };
         let cps = result.changepoints();
         assert_eq!(cps, vec![2]);

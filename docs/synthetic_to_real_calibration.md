@@ -208,7 +208,129 @@ The default `VerificationTolerance` checks `abs_acf1_abs_max ≤ 0.20` (i.e., th
 
 For `shock_contaminated` scenarios, a **wider ACF1 tolerance of 0.40** is applied automatically by the `calibrate` CLI command. This is intentional: jump contamination introduces heavier tails and larger sample-to-sample autocorrelation variability. The standard 0.20 tolerance is too tight for two independent shock-contaminated synthetic draws and would cause the verification to fail spuriously. The wider tolerance acknowledges this structural property without changing the calibration mapping itself.
 
+### 8.3 Scale-consistency contract (one-sided z-scoring)
+
+When synthetic data is used to train a model that will be evaluated on real
+data, the two streams must live on the same numeric scale.  The codebase
+enforces a **one-sided policy** (B′1):
+
+- The `FittedScaler` (e.g., z-score from `FeatureStream::fit_transform`) is
+  fit **only** on the real training partition.
+- The synthetic stream is then passed through that scaler via
+  `scaler.transform(&synthetic_observations)` — it is **not** refit.
+- After scaling, both the real-train and the calibrated-synthetic streams
+  share the same z-axis; the model trained on synthetic-scaled data therefore
+  applies meaningfully to real-scaled inputs at test time.
+
+To detect violations of this contract, `scale_consistency_check(&emp_summary,
+&syn_summary, tol)` in `src/calibration/verify.rs` compares the standard
+deviations of the empirical and synthetic streams (post-scaler) and returns a
+warning when `|syn.std - emp.std| / emp.std > tol`.  The default tolerance is
+`DEFAULT_SCALE_TOLERANCE = 0.10` (10%).  Results are surfaced both in the
+calibration report and in the `synthetic_training_provenance.json` artifact
+emitted by sim-to-real runs (see §13).
+
 ---
+
+## 13. Calibration strategies
+
+The `CalibrationStrategy` enum on `CalibrationMappingConfig` selects how
+empirical structure is mapped to synthetic generator parameters.
+
+### 13.1 `CalibrationStrategy::Summary` (default)
+
+Computes the summary functionals listed in §4 (mean, variance, quantiles,
+turbulence proxies) and routes them through the policy-driven mapping
+described in §6 (`MeanPolicy`, `VariancePolicy`, `DurationPolicy`).  This is
+the historical pathway and remains the default for backwards compatibility.
+
+### 13.2 `CalibrationStrategy::QuickEm { max_iter, tol }`
+
+Runs a short Baum–Welch EM on the real training partition and uses the
+resulting `ModelParams` *directly* as the synthetic generator parameters
+($\pi$, transition matrix $P$, regime means and variances).  This is the
+strongest available form of calibration: the synthetic stream is literally a
+sample from the same `ModelParams` that EM extracted from the real data.
+
+```rust
+CalibrationMappingConfig {
+    k: 2,
+    horizon: 2000,
+    strategy: CalibrationStrategy::QuickEm { max_iter: 100, tol: 1e-6 },
+    ..CalibrationMappingConfig::default()
+}
+```
+
+Quick-EM is the recommended strategy for `SimToRealBackend` runs because it
+eliminates the duration/quantile heuristics in `Summary` mode and produces
+parameters that are guaranteed to be consistent with a Gaussian MS likelihood
+on the real data.  Convergence is bounded by `max_iter`; non-convergence is
+recorded but does not abort the run.
+
+---
+
+## 14. Sim-to-real artifacts
+
+When `ExperimentMode::SimToReal` is used (see `docs/experiment_runner.md`),
+two additional artifacts are written to the run directory:
+
+- `synthetic_training_provenance.json` — the calibration profile (empirical
+  summary), strategy, calibrated `ModelParams`, scale-consistency check
+  result, number of synthetic and real observations.  This replaces the usual
+  `split_summary.json` artifact when in SimToReal mode.
+- `sim_to_real_summary.json` — collates `train_source`, `test_source`,
+  `model_params_synthetic_trained`, `eval_real_metrics` (Route A + Route B)
+  for the figure pipeline.
+
+Use `compare-sim-vs-real --id <simreal_id>` to additionally produce
+`sim_vs_real_comparison.json` with side-by-side metrics from the
+synthetic-trained run and an automatically-derived real-trained variant of
+the same experiment.
+
+---
+
+## 15. Variance policy variants (C′1, C′2)
+
+`VariancePolicy` extends the three legacy policies with one
+empirically-conditioned variant and a global ratio guard:
+
+- **`MagnitudeConditioned`** (C′1) — splits the raw partition observations
+  on `|y|` at the sample median and uses the within-half sample variances as
+  the low / high regime variances. Requires `EmpiricalCalibrationProfile::
+  observations` to be non-empty; otherwise it falls back to
+  `QuantileAnchored` and records the fallback in `mapping_notes`.
+- **`CalibrationMappingConfig::min_high_low_ratio`** (C′2, default `1.0`) —
+  enforces a minimum `sigma_high / sigma_low` ratio for `QuantileAnchored`
+  and `MagnitudeConditioned`. When the empirical ratio falls below the
+  floor, the variances are rescaled log-symmetrically around the geometric
+  mean to meet the guard; the action is recorded as a `C′2` mapping note.
+  Use values around `2.0`–`3.0` when calibrating against assets whose
+  empirical q05/q95 spread collapses (e.g. heavily-trimmed series).
+
+The guard composes with the post-mapping flat-spread safety net so a
+near-degenerate empirical distribution still yields a well-separated
+synthetic generator.
+
+## 16. Policy-aware verifier mask (C′4)
+
+`VerificationTargetMask` (one bool per checked field) drives both the global
+`within_tolerance` verdict and the per-field record bundle written to
+`CalibrationReportView::field_results`.  Use
+`VerificationTargetMask::for_policy(&CalibrationMappingConfig)` to derive
+the mask from the active calibration strategy:
+
+- `MeanPolicy::ZeroCentered` ⇒ `mean` masked off (the synthetic mean is
+  fixed by construction so comparing it to the empirical drift is a
+  tautology that misfires when the data has nonzero baseline return).
+- `CalibrationStrategy::QuickEm { .. }` ⇒ `abs_acf1` and `sign_change_rate`
+  masked off (those dependence summaries are side-effects of the fitted
+  model rather than calibration targets).
+
+Masked-off fields still produce a `FieldVerification { checked: false, .. }`
+record so the JSON consumer can distinguish "not checked" from
+"checked and passed".  `CalibrationReportView` additionally serialises
+`mapping_notes` (E4) and the bar-aware `frequency` tag (E3, e.g.
+`"intraday_15min"`).
 
 ## 9. Reproducibility and Leakage Policy
 

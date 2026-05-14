@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Leakage-safe feature normalization / scaling.
 //!
 //! # The leakage problem
@@ -70,8 +69,6 @@ pub enum ScalingPolicy {
 /// `FeatureStream` for provenance.
 #[derive(Debug, Clone)]
 pub struct FittedScaler {
-    /// The policy this scaler implements.
-    pub policy: ScalingPolicy,
     /// Location parameter (mean or median). Zero for `None` policy.
     pub location: f64,
     /// Scale parameter (std or IQR). One for `None` policy or degenerate case.
@@ -88,7 +85,6 @@ impl FittedScaler {
     pub fn fit(values: &[f64], policy: ScalingPolicy) -> Self {
         match &policy {
             ScalingPolicy::None => Self {
-                policy,
                 location: 0.0,
                 scale: 1.0,
             },
@@ -96,7 +92,6 @@ impl FittedScaler {
             ScalingPolicy::ZScore => {
                 if values.is_empty() {
                     return Self {
-                        policy,
                         location: 0.0,
                         scale: 1.0,
                     };
@@ -107,7 +102,6 @@ impl FittedScaler {
                 let std = var.sqrt();
                 let scale = if std > 0.0 { std } else { 1.0 };
                 Self {
-                    policy,
                     location: mean,
                     scale,
                 }
@@ -116,7 +110,6 @@ impl FittedScaler {
             ScalingPolicy::RobustZScore => {
                 if values.is_empty() {
                     return Self {
-                        policy,
                         location: 0.0,
                         scale: 1.0,
                     };
@@ -129,7 +122,6 @@ impl FittedScaler {
                 let iqr = q75 - q25;
                 let scale = if iqr > 0.0 { iqr } else { 1.0 };
                 Self {
-                    policy,
                     location: median,
                     scale,
                 }
@@ -143,22 +135,9 @@ impl FittedScaler {
         (v - self.location) / self.scale
     }
 
-    /// Apply the fitted transform in-place to a mutable slice.
-    pub fn transform_inplace(&self, values: &mut [f64]) {
-        for v in values.iter_mut() {
-            *v = self.transform_value(*v);
-        }
-    }
-
     /// Return a transformed copy of `values`.
     pub fn transform(&self, values: &[f64]) -> Vec<f64> {
         values.iter().map(|&v| self.transform_value(v)).collect()
-    }
-
-    /// Invert the transform: recover original value from scaled value.
-    #[inline]
-    pub fn inverse_transform_value(&self, scaled: f64) -> f64 {
-        scaled * self.scale + self.location
     }
 }
 
@@ -199,7 +178,7 @@ mod tests {
     fn none_policy_is_identity() {
         let scaler = FittedScaler::fit(&[1.0, 2.0, 3.0], ScalingPolicy::None);
         assert_eq!(scaler.transform_value(5.0), 5.0);
-        assert_eq!(scaler.transform_value(-3.14), -3.14);
+        assert_eq!(scaler.transform_value(-std::f64::consts::PI), -std::f64::consts::PI);
     }
 
     // ---- ZScore ----
@@ -275,19 +254,6 @@ mod tests {
         let std = (2.0f64 / 3.0).sqrt();
         let expected = (10.0 - mean) / std;
         assert!((test_transformed - expected).abs() < 1e-10);
-    }
-
-    // ---- Inverse transform ----
-
-    #[test]
-    fn inverse_transform_roundtrip() {
-        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let scaler = FittedScaler::fit(&data, ScalingPolicy::ZScore);
-        for &v in &data {
-            let scaled = scaler.transform_value(v);
-            let recovered = scaler.inverse_transform_value(scaled);
-            assert!((recovered - v).abs() < 1e-10);
-        }
     }
 
     // ---- Percentile helper ----

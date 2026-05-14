@@ -1,4 +1,4 @@
-﻿use std::fmt;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -9,12 +9,12 @@ use crate::config::Config;
 use crate::data_service::DataService;
 use crate::experiments::batch::{BatchConfig, run_batch};
 use crate::experiments::config::{DataConfig, EvaluationConfig, ExperimentConfig, TrainingMode};
+use crate::experiments::real_backend::RealBackend;
 use crate::experiments::registry;
 use crate::experiments::result::{EvaluationSummary, ExperimentResult, RunStage, RunStatus};
 use crate::experiments::runner::{DryRunBackend, ExperimentRunner};
+use crate::experiments::search::{ParamGrid, SearchPoint, grid_search};
 use crate::experiments::synthetic_backend::SyntheticBackend;
-use crate::experiments::real_backend::RealBackend;
-use crate::experiments::search::{grid_search, ParamGrid, SearchPoint};
 use crate::reporting::table::{MetricsTableBuilder, MetricsTableRow};
 
 // ---------------------------------------------------------------------------
@@ -195,6 +195,7 @@ pub async fn run_direct(args: Vec<String>) -> anyhow::Result<()> {
         "run-real" => direct_run_real(&args),
         "calibrate" => direct_calibrate(&args),
         "compare-runs" => direct_compare_runs(&args),
+        "compare-sim-vs-real" => direct_compare_sim_vs_real(&args),
         "e2e" => cmd_e2e_run(),
         "param-search" => {
             let id = flag_value(&args, "--id").unwrap_or_else(|| "surprise".to_string());
@@ -268,9 +269,7 @@ async fn cmd_show(service: &DataService) -> anyhow::Result<()> {
         .load_cached(&endpoint, interval)
         .await?
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No cached data for {endpoint} ({interval}). Run Ingest first."
-            )
+            anyhow::anyhow!("No cached data for {endpoint} ({interval}). Run Ingest first.")
         })?;
 
     println!(
@@ -476,7 +475,10 @@ fn menu_experiments() -> anyhow::Result<()> {
                     .map(|e| format!("{} — {}", e.id, e.description))
                     .collect();
                 let idx = match Select::new("Pick experiment:", choices).prompt() {
-                    Ok(choice) => reg.iter().position(|e| choice.starts_with(e.id)).unwrap_or(0),
+                    Ok(choice) => reg
+                        .iter()
+                        .position(|e| choice.starts_with(e.id))
+                        .unwrap_or(0),
                     Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
                         continue;
                     }
@@ -512,7 +514,10 @@ fn menu_experiments() -> anyhow::Result<()> {
                     .map(|e| format!("{} — {}", e.id, e.description))
                     .collect();
                 let idx = match Select::new("Base experiment for search:", choices).prompt() {
-                    Ok(choice) => reg.iter().position(|e| choice.starts_with(e.id)).unwrap_or(0),
+                    Ok(choice) => reg
+                        .iter()
+                        .position(|e| choice.starts_with(e.id))
+                        .unwrap_or(0),
                     Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
                         continue;
                     }
@@ -589,7 +594,10 @@ fn cmd_calibrate_scenario() -> anyhow::Result<()> {
         .map(|e| format!("{} — {}", e.id, e.description))
         .collect();
     let idx = match Select::new("Pick synthetic experiment to calibrate:", choices).prompt() {
-        Ok(choice) => syn_entries.iter().position(|e| choice.starts_with(e.id)).unwrap_or(0),
+        Ok(choice) => syn_entries
+            .iter()
+            .position(|e| choice.starts_with(e.id))
+            .unwrap_or(0),
         Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
             return Ok(());
         }
@@ -623,6 +631,7 @@ fn cmd_calibrate_scenario() -> anyhow::Result<()> {
         asset: match &cfg.data {
             DataConfig::Synthetic { scenario_id, .. } => format!("synthetic:{scenario_id}"),
             DataConfig::Real { asset, .. } => asset.clone(),
+            DataConfig::CalibratedSynthetic { real_asset, .. } => real_asset.clone(),
         },
         frequency: "synthetic".to_string(),
         feature_label: format!("{:?}", cfg.features.family),
@@ -632,18 +641,29 @@ fn cmd_calibrate_scenario() -> anyhow::Result<()> {
         FeatureFamilyConfig::LogReturn => FeatureFamily::LogReturn,
         FeatureFamilyConfig::AbsReturn => FeatureFamily::AbsReturn,
         FeatureFamilyConfig::SquaredReturn => FeatureFamily::SquaredReturn,
-        FeatureFamilyConfig::RollingVol { window, session_reset } => {
-            FeatureFamily::RollingVol { window: *window, session_reset: *session_reset }
-        }
-        FeatureFamilyConfig::StandardizedReturn { window, epsilon, session_reset } => {
-            FeatureFamily::StandardizedReturn { window: *window, epsilon: *epsilon, session_reset: *session_reset }
-        }
+        FeatureFamilyConfig::RollingVol {
+            window,
+            session_reset,
+        } => FeatureFamily::RollingVol {
+            window: *window,
+            session_reset: *session_reset,
+        },
+        FeatureFamilyConfig::StandardizedReturn {
+            window,
+            epsilon,
+            session_reset,
+        } => FeatureFamily::StandardizedReturn {
+            window: *window,
+            epsilon: *epsilon,
+            session_reset: *session_reset,
+        },
     };
     let profile = EmpiricalCalibrationProfile {
         tag,
         feature_family,
         targets: SummaryTargetSet::Full,
         summary: empirical_summary,
+        observations: Vec::new(),
     };
 
     // Run full calibration workflow.
@@ -653,15 +673,12 @@ fn cmd_calibrate_scenario() -> anyhow::Result<()> {
         horizon: match &cfg.data {
             DataConfig::Synthetic { horizon, .. } => *horizon,
             DataConfig::Real { .. } => 2000,
+            DataConfig::CalibratedSynthetic { horizon, .. } => *horizon,
         },
         ..CalibrationMappingConfig::default()
     };
-    let report = run_calibration_workflow(
-        profile,
-        mapping,
-        VerificationTolerance::default(),
-        seed,
-    )?;
+    let report =
+        run_calibration_workflow(profile, mapping, VerificationTolerance::default(), seed)?;
     let view = report.view();
 
     println!("  Calibration Report");
@@ -671,7 +688,14 @@ fn cmd_calibrate_scenario() -> anyhow::Result<()> {
     println!("  Horizon       : {}", view.horizon);
     println!("  Empirical n   : {}", view.empirical_n);
     println!("  Synthetic n   : {}", view.synthetic_n);
-    println!("  Verification  : {}", if view.verification_passed { "PASSED" } else { "FAILED" });
+    println!(
+        "  Verification  : {}",
+        if view.verification_passed {
+            "PASSED"
+        } else {
+            "FAILED"
+        }
+    );
     if !view.verification_notes.is_empty() {
         println!("  Notes:");
         for note in &view.verification_notes {
@@ -680,17 +704,32 @@ fn cmd_calibrate_scenario() -> anyhow::Result<()> {
     }
     println!("  Expected durations:");
     for (j, d) in view.expected_durations.iter().enumerate() {
-        println!("    Regime {j}: {d:.1} bars (p_jj = {:.4})", 1.0 - 1.0 / d.max(1.0));
+        println!(
+            "    Regime {j}: {d:.1} bars (p_jj = {:.4})",
+            1.0 - 1.0 / d.max(1.0)
+        );
     }
 
     // Empirical statistics
     let s = &report.empirical_profile.summary;
     println!();
     println!("  Empirical Summary (train partition):");
-    println!("    mean={:.6}  var={:.6}  std={:.6}", s.mean, s.variance, s.std_dev);
-    println!("    q01={:.4}  q05={:.4}  q50={:.4}  q95={:.4}  q99={:.4}", s.q01, s.q05, s.q50, s.q95, s.q99);
-    println!("    acf1={:.4}  abs_acf1={:.4}  sign_change_rate={:.4}", s.acf1, s.abs_acf1, s.sign_change_rate);
-    println!("    high_episode_mean_dur={:.1}  low_episode_mean_dur={:.1}", s.high_episode_mean_duration, s.low_episode_mean_duration);
+    println!(
+        "    mean={:.6}  var={:.6}  std={:.6}",
+        s.mean, s.variance, s.std_dev
+    );
+    println!(
+        "    q01={:.4}  q05={:.4}  q50={:.4}  q95={:.4}  q99={:.4}",
+        s.q01, s.q05, s.q50, s.q95, s.q99
+    );
+    println!(
+        "    acf1={:.4}  abs_acf1={:.4}  sign_change_rate={:.4}",
+        s.acf1, s.abs_acf1, s.sign_change_rate
+    );
+    println!(
+        "    high_episode_mean_dur={:.1}  low_episode_mean_dur={:.1}",
+        s.high_episode_mean_duration, s.low_episode_mean_duration
+    );
 
     Ok(())
 }
@@ -704,7 +743,8 @@ fn cmd_run_real_experiment() -> anyhow::Result<()> {
 
     // Filter registry to real experiments only.
     let reg = registry::registry();
-    let real_entries: Vec<_> = reg.iter()
+    let real_entries: Vec<_> = reg
+        .iter()
         .filter(|e| (e.build)().mode == ExperimentMode::Real)
         .collect();
 
@@ -722,7 +762,8 @@ fn cmd_run_real_experiment() -> anyhow::Result<()> {
     println!("  Run 'Data > Ingest' first if you have not done so.");
     println!();
 
-    let choices: Vec<String> = real_entries.iter()
+    let choices: Vec<String> = real_entries
+        .iter()
         .map(|e| format!("{} — {}", e.id, e.description))
         .collect();
 
@@ -799,7 +840,8 @@ fn cmd_e2e_run() -> anyhow::Result<()> {
     let reg = registry::registry();
     // E2E run only covers synthetic experiments; real experiments require
     // cached market data and are run separately via Run Real Experiment.
-    let synthetic_entries: Vec<_> = reg.iter()
+    let synthetic_entries: Vec<_> = reg
+        .iter()
         .filter(|e| (e.build)().mode == ExperimentMode::Synthetic)
         .collect();
     let total = synthetic_entries.len();
@@ -859,14 +901,22 @@ fn cmd_e2e_run() -> anyhow::Result<()> {
                     let rec = recall.unwrap_or(*coverage);
                     println!(
                         "  Metrics : prec={:.4}  recall={:.4}  n_events={}  n_alarms={}",
-                        prec, rec, n_events,
+                        prec,
+                        rec,
+                        n_events,
                         result.detector_summary.as_ref().map_or(0, |d| d.n_alarms)
                     );
                     if let Some(mr) = miss_rate {
-                        println!("  Miss rate: {mr:.4}  FAR: {:.6}", false_alarm_rate.unwrap_or(0.0));
+                        println!(
+                            "  Miss rate: {mr:.4}  FAR: {:.6}",
+                            false_alarm_rate.unwrap_or(0.0)
+                        );
                     }
                     if let Some(dm) = delay_mean {
-                        println!("  Delay   : mean={dm:.1}  median={:.1}", delay_median.unwrap_or(0.0));
+                        println!(
+                            "  Delay   : mean={dm:.1}  median={:.1}",
+                            delay_median.unwrap_or(0.0)
+                        );
                     }
                 }
                 EvaluationSummary::Real {
@@ -885,7 +935,10 @@ fn cmd_e2e_run() -> anyhow::Result<()> {
         if let Some(ms) = &result.model_summary
             && let Some(fp) = &ms.fitted_params
         {
-            println!("  Model   : K={}  LL={:.4}  iter={}  converged={}", ms.k_regimes, fp.log_likelihood, fp.n_iter, fp.converged);
+            println!(
+                "  Model   : K={}  LL={:.4}  iter={}  converged={}",
+                ms.k_regimes, fp.log_likelihood, fp.n_iter, fp.converged
+            );
             for j in 0..ms.k_regimes {
                 println!(
                     "  Regime {}: mu={:.6}  var={:.6}  pi={:.4}",
@@ -1170,15 +1223,19 @@ fn direct_run_batch(args: &[String]) -> anyhow::Result<()> {
     {
         let out_dir = save_dir.as_deref().unwrap_or("./runs");
         let _ = fs::create_dir_all(out_dir);
-        let run_summaries: Vec<_> = batch.run_results.iter().map(|r| {
-            serde_json::json!({
-                "run_id": r.metadata.run_id,
-                "run_label": r.metadata.run_label,
-                "mode": r.metadata.mode,
-                "status": format!("{:?}", r.status),
-                "evaluation": r.evaluation_summary,
+        let run_summaries: Vec<_> = batch
+            .run_results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "run_id": r.metadata.run_id,
+                    "run_label": r.metadata.run_label,
+                    "mode": r.metadata.mode,
+                    "status": format!("{:?}", r.status),
+                    "evaluation": r.evaluation_summary,
+                })
             })
-        }).collect();
+            .collect();
         let batch_summary = serde_json::json!({
             "n_runs": batch.run_results.len(),
             "n_success": batch.n_success,
@@ -1222,10 +1279,11 @@ fn direct_inspect(args: &[String]) -> anyhow::Result<()> {
 fn direct_generate_report(args: &[String]) -> anyhow::Result<()> {
     use crate::experiments::config::ExperimentMode;
 
-    let dir = flag_value(args, "--dir")
-        .ok_or_else(|| anyhow::anyhow!("Usage: generate-report --dir <run-directory> [--cache <path>]"))?;
-    let cache = flag_value(args, "--cache")
-        .unwrap_or_else(|| "data/commodities.duckdb".to_string());
+    let dir = flag_value(args, "--dir").ok_or_else(|| {
+        anyhow::anyhow!("Usage: generate-report --dir <run-directory> [--cache <path>]")
+    })?;
+    let cache =
+        flag_value(args, "--cache").unwrap_or_else(|| "data/commodities.duckdb".to_string());
 
     let snapshot_path = PathBuf::from(&dir).join("config.snapshot.json");
     if !snapshot_path.exists() {
@@ -1268,13 +1326,27 @@ fn direct_generate_report(args: &[String]) -> anyhow::Result<()> {
             let runner = crate::experiments::runner::ExperimentRunner::new(backend);
             runner.run(cfg.clone())
         }
+        ExperimentMode::SimToReal => {
+            println!("Running SimToRealBackend (cache: {cache}) — re-fitting model...");
+            println!();
+            let backend = crate::experiments::sim_to_real_backend::SimToRealBackend::new(&cache);
+            let runner = crate::experiments::runner::ExperimentRunner::new(backend);
+            runner.run(cfg.clone())
+        }
     };
 
     println!();
     println!("Pipeline:");
     print_stage_log(&cfg, &result);
     println!();
-    println!("Status: {}", if result.is_success() { "SUCCESS" } else { "FAILED" });
+    println!(
+        "Status: {}",
+        if result.is_success() {
+            "SUCCESS"
+        } else {
+            "FAILED"
+        }
+    );
 
     if let Some(first) = result.artifacts.first() {
         let p = PathBuf::from(&first.path);
@@ -1294,18 +1366,18 @@ fn direct_generate_report(args: &[String]) -> anyhow::Result<()> {
 ///
 /// The `--save` flag copies the run directory to `<out_dir>` for archiving.
 fn direct_run_real(args: &[String]) -> anyhow::Result<()> {
-    let id = flag_value(args, "--id")
-        .ok_or_else(|| anyhow::anyhow!("Usage: run-real --id <experiment_id> [--cache <path>] [--save <out_dir>]"))?;
-    let cache = flag_value(args, "--cache")
-        .unwrap_or_else(|| "data/commodities.duckdb".to_string());
+    let id = flag_value(args, "--id").ok_or_else(|| {
+        anyhow::anyhow!("Usage: run-real --id <experiment_id> [--cache <path>] [--save <out_dir>]")
+    })?;
+    let cache =
+        flag_value(args, "--cache").unwrap_or_else(|| "data/commodities.duckdb".to_string());
     let save_to = flag_value(args, "--save");
 
     let reg = crate::experiments::registry::registry();
-    let entry = reg.iter().find(|e| e.id == id)
-        .ok_or_else(|| {
-            let known = reg.iter().map(|e| e.id).collect::<Vec<_>>().join(", ");
-            anyhow::anyhow!("Unknown experiment id '{id}'. Known: {known}")
-        })?;
+    let entry = reg.iter().find(|e| e.id == id).ok_or_else(|| {
+        let known = reg.iter().map(|e| e.id).collect::<Vec<_>>().join(", ");
+        anyhow::anyhow!("Unknown experiment id '{id}'. Known: {known}")
+    })?;
 
     let cfg = (entry.build)();
     println!();
@@ -1317,9 +1389,17 @@ fn direct_run_real(args: &[String]) -> anyhow::Result<()> {
     println!("(Loading data and running EM — this may take a few seconds.)");
     println!();
 
-    let backend = crate::experiments::real_backend::RealBackend::new(&cache);
-    let runner = crate::experiments::runner::ExperimentRunner::new(backend);
-    let result = runner.run(cfg.clone());
+    // Dispatch by mode so SimToReal experiments use SimToRealBackend.
+    let result = match cfg.mode {
+        crate::experiments::config::ExperimentMode::SimToReal => {
+            let backend = crate::experiments::sim_to_real_backend::SimToRealBackend::new(&cache);
+            crate::experiments::runner::ExperimentRunner::new(backend).run(cfg.clone())
+        }
+        _ => {
+            let backend = crate::experiments::real_backend::RealBackend::new(&cache);
+            crate::experiments::runner::ExperimentRunner::new(backend).run(cfg.clone())
+        }
+    };
 
     println!();
     println!("Pipeline:");
@@ -1346,9 +1426,15 @@ fn direct_run_real(args: &[String]) -> anyhow::Result<()> {
     {
         println!();
         println!("Fitted Model:");
-        println!("  K={}  LL={:.4}  iter={}  converged={}", ms.k_regimes, fp.log_likelihood, fp.n_iter, fp.converged);
+        println!(
+            "  K={}  LL={:.4}  iter={}  converged={}",
+            ms.k_regimes, fp.log_likelihood, fp.n_iter, fp.converged
+        );
         for j in 0..ms.k_regimes {
-            println!("  Regime {j}: mu={:.6}  var={:.6}  pi={:.4}", fp.means[j], fp.variances[j], fp.pi[j]);
+            println!(
+                "  Regime {j}: mu={:.6}  var={:.6}  pi={:.4}",
+                fp.means[j], fp.variances[j], fp.pi[j]
+            );
         }
         for i in 0..ms.k_regimes {
             let row: Vec<String> = fp.transition[i].iter().map(|v| format!("{v:.4}")).collect();
@@ -1371,23 +1457,212 @@ fn direct_run_real(args: &[String]) -> anyhow::Result<()> {
 
     // Optionally copy artifacts to a save directory.
     if let Some(ref save_dir) = save_to
-        && let Some(first_art) = result.artifacts.first() {
-            let run_path = PathBuf::from(&first_art.path);
-            if let Some(run_dir_path) = run_path.parent() {
-                let dest = PathBuf::from(save_dir);
-                let _ = fs::create_dir_all(&dest);
-                for art in &result.artifacts {
-                    let src = PathBuf::from(&art.path);
-                    if src.exists() {
-                        let fname = src.file_name().unwrap_or_default();
-                        let _ = fs::copy(&src, dest.join(fname));
-                    }
+        && let Some(first_art) = result.artifacts.first()
+    {
+        let run_path = PathBuf::from(&first_art.path);
+        if let Some(run_dir_path) = run_path.parent() {
+            let dest = PathBuf::from(save_dir);
+            let _ = fs::create_dir_all(&dest);
+            for art in &result.artifacts {
+                let src = PathBuf::from(&art.path);
+                if src.exists() {
+                    let fname = src.file_name().unwrap_or_default();
+                    let _ = fs::copy(&src, dest.join(fname));
                 }
-                println!();
-                println!("Artifacts copied to: {save_dir}");
-                let _ = run_dir_path; // suppress unused warning
             }
+            println!();
+            println!("Artifacts copied to: {save_dir}");
+            let _ = run_dir_path; // suppress unused warning
         }
+    }
+
+    Ok(())
+}
+
+/// D′2 — `compare-sim-vs-real --id <simreal_id>`
+///
+/// Runs the registered sim-to-real experiment with `SimToRealBackend`, then
+/// derives a "train-on-real" variant from the same config (Real mode + the
+/// underlying real series as the training source) and runs it with
+/// `RealBackend`.  Emits `sim_vs_real_comparison.json` summarising both
+/// metric tuples side-by-side.
+fn direct_compare_sim_vs_real(args: &[String]) -> anyhow::Result<()> {
+    use crate::experiments::config::{DataConfig, ExperimentMode};
+    use crate::experiments::result::EvaluationSummary;
+    use crate::experiments::runner::ExperimentRunner;
+
+    let id = flag_value(args, "--id").ok_or_else(|| {
+        anyhow::anyhow!(
+            "Usage: compare-sim-vs-real --id <simreal_id> [--cache <path>] [--save <out_dir>]"
+        )
+    })?;
+    let cache =
+        flag_value(args, "--cache").unwrap_or_else(|| "data/commodities.duckdb".to_string());
+    let save_to = flag_value(args, "--save").unwrap_or_else(|| format!("./runs/comparison/{id}"));
+
+    let reg = crate::experiments::registry::registry();
+    let entry = reg
+        .iter()
+        .find(|e| e.id == id)
+        .ok_or_else(|| anyhow::anyhow!("Unknown experiment id '{id}'"))?;
+    let sim_cfg = (entry.build)();
+
+    if !matches!(sim_cfg.mode, ExperimentMode::SimToReal) {
+        anyhow::bail!(
+            "compare-sim-vs-real requires a SimToReal-mode experiment; '{id}' is {:?}",
+            sim_cfg.mode
+        );
+    }
+
+    // Derive the train-on-real variant: same data series + features + model +
+    // detector + evaluation, but train directly on the real series.
+    let mut real_cfg = sim_cfg.clone();
+    real_cfg.mode = ExperimentMode::Real;
+    real_cfg.meta.run_label = format!("{}__trainreal", sim_cfg.meta.run_label);
+    real_cfg.data = match &sim_cfg.data {
+        DataConfig::CalibratedSynthetic {
+            real_asset,
+            real_frequency,
+            real_dataset_id,
+            real_date_start,
+            real_date_end,
+            ..
+        } => DataConfig::Real {
+            asset: real_asset.clone(),
+            frequency: real_frequency.clone(),
+            dataset_id: real_dataset_id.clone(),
+            date_start: real_date_start.clone(),
+            date_end: real_date_end.clone(),
+        },
+        other => anyhow::bail!(
+            "SimToReal config must use CalibratedSynthetic data; got {:?}",
+            std::mem::discriminant(other)
+        ),
+    };
+
+    println!();
+    println!("compare-sim-vs-real  id = {id}");
+    println!("  cache = {cache}");
+    println!();
+
+    // 1. Run the synthetic-trained pipeline.
+    println!("[1/2] Running SimToReal pipeline (synthetic-trained, real-tested)...");
+    let sim_backend = crate::experiments::sim_to_real_backend::SimToRealBackend::new(&cache);
+    let sim_runner = ExperimentRunner::new(sim_backend);
+    let sim_result = sim_runner.run(sim_cfg.clone());
+    print_run_result_summary(&sim_result);
+
+    // 2. Run the train-on-real comparator.
+    println!();
+    println!("[2/2] Running RealBackend (real-trained, real-tested)...");
+    let real_backend = crate::experiments::real_backend::RealBackend::new(&cache);
+    let real_runner = ExperimentRunner::new(real_backend);
+    let real_result = real_runner.run(real_cfg.clone());
+    print_run_result_summary(&real_result);
+
+    // Extract metrics into a comparable shape.
+    let metrics = |r: &ExperimentResult| -> Option<(f64, f64, f64)> {
+        if let Some(EvaluationSummary::Real {
+            event_coverage,
+            alarm_relevance,
+            segmentation_coherence,
+        }) = &r.evaluation_summary
+        {
+            Some((*event_coverage, *alarm_relevance, *segmentation_coherence))
+        } else {
+            None
+        }
+    };
+
+    let metrics_json = |m: Option<(f64, f64, f64)>| -> serde_json::Value {
+        match m {
+            Some((ec, ar, sc)) => serde_json::json!({
+                "event_coverage": ec,
+                "alarm_relevance": ar,
+                "segmentation_coherence": sc,
+            }),
+            None => serde_json::Value::Null,
+        }
+    };
+
+    let sim_metrics = metrics(&sim_result);
+    let real_metrics = metrics(&real_result);
+
+    // D′2.2 — Compute sim-to-real gap (real_trained − sim_trained).  A
+    // positive value means real-trained is better; negative means the
+    // synthetic-trained model already matches or exceeds the real-trained
+    // baseline on that metric.
+    let deltas_json = match (sim_metrics, real_metrics) {
+        (Some((sec, sar, ssc)), Some((rec, rar, rsc))) => serde_json::json!({
+            "event_coverage_gap":        rec - sec,
+            "alarm_relevance_gap":       rar - sar,
+            "segmentation_coherence_gap": rsc - ssc,
+        }),
+        _ => serde_json::Value::Null,
+    };
+
+    let comparison = serde_json::json!({
+        "id": id,
+        "sim_trained": {
+            "run_id": sim_result.metadata.run_id,
+            "run_label": sim_result.metadata.run_label,
+            "metrics": metrics_json(sim_metrics),
+        },
+        "real_trained": {
+            "run_id": real_result.metadata.run_id,
+            "run_label": real_result.metadata.run_label,
+            "metrics": metrics_json(real_metrics),
+        },
+        "deltas_real_minus_sim": deltas_json,
+    });
+
+    fs::create_dir_all(&save_to)?;
+    let out_path = PathBuf::from(&save_to).join("sim_vs_real_comparison.json");
+    fs::write(&out_path, serde_json::to_string_pretty(&comparison)?)?;
+    println!();
+    println!("Wrote comparison: {}", out_path.display());
+
+    // D′2.3 — Markdown table alongside the JSON.
+    let fmt = |v: Option<f64>| v.map_or("n/a".to_string(), |x| format!("{x:.4}"));
+    let (sec, sar, ssc) =
+        sim_metrics.map_or((None, None, None), |(a, b, c)| (Some(a), Some(b), Some(c)));
+    let (rec, rar, rsc) =
+        real_metrics.map_or((None, None, None), |(a, b, c)| (Some(a), Some(b), Some(c)));
+    let delta = |s: Option<f64>, r: Option<f64>| match (s, r) {
+        (Some(a), Some(b)) => format!("{:+.4}", b - a),
+        _ => "n/a".to_string(),
+    };
+    let md = format!(
+        "# Sim-vs-Real Comparison — `{id}`\n\
+        \n\
+        | Metric | Sim-trained | Real-trained | Δ (real − sim) |\n\
+        |---|---:|---:|---:|\n\
+        | event_coverage          | {sec_s} | {rec_s} | {ec_d} |\n\
+        | alarm_relevance         | {sar_s} | {rar_s} | {ar_d} |\n\
+        | segmentation_coherence  | {ssc_s} | {rsc_s} | {sc_d} |\n\
+        \n\
+        - Sim-trained run id : `{sim_run}`\n\
+        - Real-trained run id: `{real_run}`\n",
+        id = id,
+        sec_s = fmt(sec),
+        rec_s = fmt(rec),
+        ec_d = delta(sec, rec),
+        sar_s = fmt(sar),
+        rar_s = fmt(rar),
+        ar_d = delta(sar, rar),
+        ssc_s = fmt(ssc),
+        rsc_s = fmt(rsc),
+        sc_d = delta(ssc, rsc),
+        sim_run = sim_result.metadata.run_id,
+        real_run = real_result.metadata.run_id,
+    );
+    let md_path = PathBuf::from(&save_to).join("sim_vs_real_comparison.md");
+    fs::write(&md_path, &md)?;
+    println!("Wrote markdown:   {}", md_path.display());
+    println!();
+    for line in md.lines() {
+        println!("{line}");
+    }
 
     Ok(())
 }
@@ -1413,20 +1688,22 @@ fn direct_calibrate(args: &[String]) -> anyhow::Result<()> {
     use crate::experiments::runner::ExperimentBackend;
     use crate::features::FeatureFamily;
 
-    let id = flag_value(args, "--id")
-        .ok_or_else(|| anyhow::anyhow!("Usage: calibrate --id <experiment_id> [--cache <path>] [--out <dir>]"))?;
-    let out_dir = flag_value(args, "--out")
-        .unwrap_or_else(|| format!("./runs/calibration/{id}"));
+    let id = flag_value(args, "--id").ok_or_else(|| {
+        anyhow::anyhow!("Usage: calibrate --id <experiment_id> [--cache <path>] [--out <dir>]")
+    })?;
+    let out_dir = flag_value(args, "--out").unwrap_or_else(|| format!("./runs/calibration/{id}"));
 
     let reg = crate::experiments::registry::registry();
-    let entry = reg.iter().find(|e| e.id == id)
+    let entry = reg
+        .iter()
+        .find(|e| e.id == id)
         .ok_or_else(|| anyhow::anyhow!("Unknown experiment id '{id}'"))?;
 
     let cfg = (entry.build)();
 
     // For real experiments we need the DuckDB cache path.
-    let cache = flag_value(args, "--cache")
-        .unwrap_or_else(|| "data/commodities.duckdb".to_string());
+    let cache =
+        flag_value(args, "--cache").unwrap_or_else(|| "data/commodities.duckdb".to_string());
 
     println!();
     match cfg.mode {
@@ -1438,6 +1715,12 @@ fn direct_calibrate(args: &[String]) -> anyhow::Result<()> {
             println!("Calibrating '{id}'  [mode: Real]");
             println!("(Loading real market data from cache: {cache})");
             println!("(Computing empirical feature statistics -> synthetic generator params.)");
+        }
+        ExperimentMode::SimToReal => {
+            println!("Calibrating '{id}'  [mode: SimToReal]");
+            println!(
+                "(Loading real market data from cache: {cache} and running quick-EM calibration.)"
+            );
         }
     }
     println!();
@@ -1455,6 +1738,12 @@ fn direct_calibrate(args: &[String]) -> anyhow::Result<()> {
             let features = backend.build_features(&cfg, &data)?;
             (data, features)
         }
+        ExperimentMode::SimToReal => {
+            let backend = crate::experiments::sim_to_real_backend::SimToRealBackend::new(&cache);
+            let data = backend.resolve_data(&cfg)?;
+            let features = backend.build_features(&cfg, &data)?;
+            (data, features)
+        }
     };
 
     if features.observations.is_empty() {
@@ -1468,10 +1757,16 @@ fn direct_calibrate(args: &[String]) -> anyhow::Result<()> {
         asset: match &cfg.data {
             DataConfig::Synthetic { scenario_id, .. } => format!("synthetic:{scenario_id}"),
             DataConfig::Real { asset, .. } => asset.clone(),
+            DataConfig::CalibratedSynthetic { real_asset, .. } => {
+                format!("calibrated_synthetic:{real_asset}")
+            }
         },
         frequency: match &cfg.data {
             DataConfig::Synthetic { .. } => "synthetic".to_string(),
             DataConfig::Real { frequency, .. } => format!("{frequency:?}").to_lowercase(),
+            DataConfig::CalibratedSynthetic { real_frequency, .. } => {
+                format!("{real_frequency:?}").to_lowercase()
+            }
         },
         feature_label: format!("{:?}", cfg.features.family),
         partition: CalibrationPartition::TrainOnly,
@@ -1480,12 +1775,22 @@ fn direct_calibrate(args: &[String]) -> anyhow::Result<()> {
         FeatureFamilyConfig::LogReturn => FeatureFamily::LogReturn,
         FeatureFamilyConfig::AbsReturn => FeatureFamily::AbsReturn,
         FeatureFamilyConfig::SquaredReturn => FeatureFamily::SquaredReturn,
-        FeatureFamilyConfig::RollingVol { window, session_reset } => {
-            FeatureFamily::RollingVol { window: *window, session_reset: *session_reset }
-        }
-        FeatureFamilyConfig::StandardizedReturn { window, epsilon, session_reset } => {
-            FeatureFamily::StandardizedReturn { window: *window, epsilon: *epsilon, session_reset: *session_reset }
-        }
+        FeatureFamilyConfig::RollingVol {
+            window,
+            session_reset,
+        } => FeatureFamily::RollingVol {
+            window: *window,
+            session_reset: *session_reset,
+        },
+        FeatureFamilyConfig::StandardizedReturn {
+            window,
+            epsilon,
+            session_reset,
+        } => FeatureFamily::StandardizedReturn {
+            window: *window,
+            epsilon: *epsilon,
+            session_reset: *session_reset,
+        },
     };
 
     let profile = EmpiricalCalibrationProfile {
@@ -1493,16 +1798,21 @@ fn direct_calibrate(args: &[String]) -> anyhow::Result<()> {
         feature_family,
         targets: SummaryTargetSet::Full,
         summary: empirical_summary.clone(),
+        observations: Vec::new(),
     };
 
     let seed = cfg.reproducibility.seed.unwrap_or(42);
     let scenario_id = match &cfg.data {
         DataConfig::Synthetic { scenario_id, .. } => scenario_id.clone(),
         DataConfig::Real { .. } => String::new(),
+        DataConfig::CalibratedSynthetic { .. } => String::new(),
     };
     let jump = if scenario_id == "shock_contaminated" {
         use crate::calibration::mapping::JumpContamination;
-        Some(JumpContamination { jump_prob: 0.05, jump_scale_mult: 3.0 })
+        Some(JumpContamination {
+            jump_prob: 0.05,
+            jump_scale_mult: 3.0,
+        })
     } else {
         None
     };
@@ -1514,6 +1824,7 @@ fn direct_calibrate(args: &[String]) -> anyhow::Result<()> {
             // synthetic horizon — this gives a calibrated generator that
             // produces sequences of the same length as the training data.
             DataConfig::Real { .. } => features.train_n.max(100),
+            DataConfig::CalibratedSynthetic { horizon, .. } => *horizon,
         },
         jump,
         ..CalibrationMappingConfig::default()
@@ -1533,12 +1844,7 @@ fn direct_calibrate(args: &[String]) -> anyhow::Result<()> {
         VerificationTolerance::default()
     };
 
-    let report = run_calibration_workflow(
-        profile,
-        mapping,
-        tol,
-        seed,
-    )?;
+    let report = run_calibration_workflow(profile, mapping, tol, seed)?;
     let view = report.view();
 
     println!("Calibration Report");
@@ -1548,11 +1854,26 @@ fn direct_calibrate(args: &[String]) -> anyhow::Result<()> {
     println!("  Horizon      : {}", view.horizon);
     println!("  Empirical n  : {}", view.empirical_n);
     println!("  Synthetic n  : {}", view.synthetic_n);
-    println!("  Verification : {}", if view.verification_passed { "PASSED" } else { "FAILED" });
-    for note in &view.verification_notes { println!("  Note: {note}"); }
+    println!(
+        "  Verification : {}",
+        if view.verification_passed {
+            "PASSED"
+        } else {
+            "FAILED"
+        }
+    );
+    for note in &view.verification_notes {
+        println!("  Note: {note}");
+    }
     let s = &report.empirical_profile.summary;
-    println!("  Empirical: mean={:.6}  var={:.6}  std={:.6}", s.mean, s.variance, s.std_dev);
-    println!("  acf1={:.4}  abs_acf1={:.4}  sign_change_rate={:.4}", s.acf1, s.abs_acf1, s.sign_change_rate);
+    println!(
+        "  Empirical: mean={:.6}  var={:.6}  std={:.6}",
+        s.mean, s.variance, s.std_dev
+    );
+    println!(
+        "  acf1={:.4}  abs_acf1={:.4}  sign_change_rate={:.4}",
+        s.acf1, s.abs_acf1, s.sign_change_rate
+    );
 
     // Save artifacts.
     fs::create_dir_all(&out_dir)?;
@@ -1641,7 +1962,9 @@ fn direct_calibrate(args: &[String]) -> anyhow::Result<()> {
 ///   result.json          — full ExperimentResult from the best-config run
 ///   + all standard run artifacts (config.snapshot.json, plots, CSV traces, …)
 fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
-    use crate::experiments::search::{ModelGrid, ParamGrid, feature_family_name, optimize, optimize_full};
+    use crate::experiments::search::{
+        ModelGrid, ParamGrid, feature_family_name, optimize, optimize_full,
+    };
     use std::io::Write;
 
     let id = flag_value(args, "--id").ok_or_else(|| {
@@ -1649,23 +1972,19 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
             "Usage: optimize --id <experiment_id> [--cache <path>] [--save <dir>] [--top <n>] [--model]"
         )
     })?;
-    let cache = flag_value(args, "--cache")
-        .unwrap_or_else(|| "data/commodities.duckdb".to_string());
-    let save_dir = flag_value(args, "--save")
-        .unwrap_or_else(|| format!("./runs/optimize/{id}"));
+    let cache =
+        flag_value(args, "--cache").unwrap_or_else(|| "data/commodities.duckdb".to_string());
+    let save_dir = flag_value(args, "--save").unwrap_or_else(|| format!("./runs/optimize/{id}"));
     let top_n: usize = flag_value(args, "--top")
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
     let model_opt = args.iter().any(|a| a == "--model");
 
     let reg = crate::experiments::registry::registry();
-    let entry = reg
-        .iter()
-        .find(|e| e.id == id)
-        .ok_or_else(|| {
-            let known = reg.iter().map(|e| e.id).collect::<Vec<_>>().join(", ");
-            anyhow::anyhow!("Unknown experiment id '{id}'. Known: {known}")
-        })?;
+    let entry = reg.iter().find(|e| e.id == id).ok_or_else(|| {
+        let known = reg.iter().map(|e| e.id).collect::<Vec<_>>().join(", ");
+        anyhow::anyhow!("Unknown experiment id '{id}'. Known: {known}")
+    })?;
 
     let base_cfg = (entry.build)();
 
@@ -1685,9 +2004,18 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
 
     println!();
     println!("  Optimize — experiment : {id}");
-    println!("  Detector              : {:?}", base_cfg.detector.detector_type);
-    println!("  Mode                  : {}",
-        if model_opt { "joint model + detector" } else { "detector only" });
+    println!(
+        "  Detector              : {:?}",
+        base_cfg.detector.detector_type
+    );
+    println!(
+        "  Mode                  : {}",
+        if model_opt {
+            "joint model + detector"
+        } else {
+            "detector only"
+        }
+    );
 
     // In debug builds each EM fit is ~200× slower than release.  Give an
     // actionable estimate so the user can decide whether to wait or kill.
@@ -1700,23 +2028,34 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
         };
         eprintln!();
         eprintln!("  NOTE: running in debug build — EM is ~200× slower than release.");
-        eprintln!("  Estimated time: {n_pts} grid points × ~10–30s/fit ≈ {:.0}–{:.0} min.",
+        eprintln!(
+            "  Estimated time: {n_pts} grid points × ~10–30s/fit ≈ {:.0}–{:.0} min.",
             n_pts as f64 * 10.0 / 60.0,
-            n_pts as f64 * 30.0 / 60.0);
-        eprintln!("  Run  cargo build --release  and use the release binary for production searches.");
+            n_pts as f64 * 30.0 / 60.0
+        );
+        eprintln!(
+            "  Run  cargo build --release  and use the release binary for production searches."
+        );
         eprintln!();
     }
     if let Some(mg) = &model_grid {
         println!("  k_regimes values      : {:?}", mg.k_regimes_values);
-        println!("  Feature families      : {}",
-            mg.feature_families.iter().map(feature_family_name).collect::<Vec<_>>().join(", "));
+        println!(
+            "  Feature families      : {}",
+            mg.feature_families
+                .iter()
+                .map(feature_family_name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     let total_pts = if let Some(mg) = &model_grid {
         mg.n_points() * grid.n_points()
     } else {
         grid.n_points()
     };
-    println!("  Grid size             : {} points ({} thresholds × {} persistence × {} cooldown{})",
+    println!(
+        "  Grid size             : {} points ({} thresholds × {} persistence × {} cooldown{})",
         total_pts,
         grid.thresholds.len(),
         grid.persistence_values.len(),
@@ -1761,11 +2100,14 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
     // Print top-N results.
     if model_opt {
         println!("  Top-{top_n} results (sorted by score desc):");
-        println!("  {:>5}  {:>8}  {:>13}  {:>10}  {:>8}  {:>9}  {:>9}  {:>8}",
-            "rank", "k_reg", "feature", "threshold", "persist", "coverage", "precision", "score");
+        println!(
+            "  {:>5}  {:>8}  {:>13}  {:>10}  {:>8}  {:>9}  {:>9}  {:>8}",
+            "rank", "k_reg", "feature", "threshold", "persist", "coverage", "precision", "score"
+        );
         println!("  {}", "-".repeat(85));
         for (rank, pt) in opt.points.iter().take(top_n).enumerate() {
-            println!("  {:>5}  {:>8}  {:>13}  {:>10.4}  {:>8}  {:>9.4}  {:>9.4}  {:>8.4}",
+            println!(
+                "  {:>5}  {:>8}  {:>13}  {:>10.4}  {:>8}  {:>9.4}  {:>9.4}  {:>8.4}",
                 rank + 1,
                 pt.k_regimes,
                 feature_family_name(&pt.feature_family),
@@ -1778,11 +2120,14 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
         }
     } else {
         println!("  Top-{top_n} results (sorted by score desc):");
-        println!("  {:>6}  {:>11}  {:>11}  {:>8}  {:>9}  {:>9}  {:>8}",
-            "rank", "threshold", "persistence", "cooldown", "coverage", "precision", "score");
+        println!(
+            "  {:>6}  {:>11}  {:>11}  {:>8}  {:>9}  {:>9}  {:>8}",
+            "rank", "threshold", "persistence", "cooldown", "coverage", "precision", "score"
+        );
         println!("  {}", "-".repeat(72));
         for (rank, pt) in opt.points.iter().take(top_n).enumerate() {
-            println!("  {:>6}  {:>11.4}  {:>11}  {:>8}  {:>9.4}  {:>9.4}  {:>8.4}",
+            println!(
+                "  {:>6}  {:>11.4}  {:>11}  {:>8}  {:>9.4}  {:>9.4}  {:>8.4}",
                 rank + 1,
                 pt.threshold,
                 pt.persistence_required,
@@ -1795,11 +2140,17 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
     }
     println!();
 
-    let best = opt.points.first().expect("grid must have at least one point");
+    let best = opt
+        .points
+        .first()
+        .expect("grid must have at least one point");
     println!("  Best params:");
     if model_opt {
         println!("    k_regimes           = {}", best.k_regimes);
-        println!("    feature_family      = {}", feature_family_name(&best.feature_family));
+        println!(
+            "    feature_family      = {}",
+            feature_family_name(&best.feature_family)
+        );
     }
     println!("    threshold           = {}", best.threshold);
     println!("    persistence_required= {}", best.persistence_required);
@@ -1843,21 +2194,26 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
 
     // Write search_report.json
     fs::create_dir_all(&save_dir)?;
-    let report_points: Vec<_> = opt.points.iter().enumerate().map(|(i, p)| {
-        serde_json::json!({
-            "rank": i + 1,
-            "k_regimes": p.k_regimes,
-            "feature_family": feature_family_name(&p.feature_family),
-            "threshold": p.threshold,
-            "persistence_required": p.persistence_required,
-            "cooldown": p.cooldown,
-            "score": p.score,
-            "coverage": p.coverage,
-            "precision_like": p.precision_like,
-            "n_alarms": p.n_alarms,
-            "status": format!("{:?}", p.status),
+    let report_points: Vec<_> = opt
+        .points
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            serde_json::json!({
+                "rank": i + 1,
+                "k_regimes": p.k_regimes,
+                "feature_family": feature_family_name(&p.feature_family),
+                "threshold": p.threshold,
+                "persistence_required": p.persistence_required,
+                "cooldown": p.cooldown,
+                "score": p.score,
+                "coverage": p.coverage,
+                "precision_like": p.precision_like,
+                "n_alarms": p.n_alarms,
+                "status": format!("{:?}", p.status),
+            })
         })
-    }).collect();
+        .collect();
 
     let model_grid_json = if let Some(mg) = &model_grid {
         serde_json::json!({
@@ -1901,17 +2257,30 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
     // Write search_summary.txt
     let mut summary_lines = vec![
         format!("Proteus Optimize — {id}"),
-        format!("Date           : {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")),
+        format!(
+            "Date           : {}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        ),
         format!("Experiment ID  : {id}"),
         format!("Detector       : {:?}", base_cfg.detector.detector_type),
-        format!("Mode           : {}", if model_opt { "joint model + detector" } else { "detector only" }),
+        format!(
+            "Mode           : {}",
+            if model_opt {
+                "joint model + detector"
+            } else {
+                "detector only"
+            }
+        ),
         format!("Grid points    : {}", opt.n_evaluated),
         String::new(),
         format!("Best Params:"),
     ];
     if model_opt {
         summary_lines.push(format!("  k_regimes           = {}", best.k_regimes));
-        summary_lines.push(format!("  feature_family      = {}", feature_family_name(&best.feature_family)));
+        summary_lines.push(format!(
+            "  feature_family      = {}",
+            feature_family_name(&best.feature_family)
+        ));
     }
     summary_lines.extend([
         format!("  threshold           = {}", best.threshold),
@@ -1925,25 +2294,40 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
         format!("Top-{top_n} Grid Results:"),
     ]);
     if model_opt {
-        summary_lines.push(format!("  {:>4}  {:>6}  {:>13}  {:>10}  {:>7}  {:>9}  {:>9}  {:>8}",
-            "rank", "k_reg", "feature", "threshold", "persist", "coverage", "precision", "score"));
+        summary_lines.push(format!(
+            "  {:>4}  {:>6}  {:>13}  {:>10}  {:>7}  {:>9}  {:>9}  {:>8}",
+            "rank", "k_reg", "feature", "threshold", "persist", "coverage", "precision", "score"
+        ));
         summary_lines.push(format!("  {}", "-".repeat(82)));
         for (rank, pt) in opt.points.iter().take(top_n).enumerate() {
             summary_lines.push(format!(
                 "  {:>4}  {:>6}  {:>13}  {:>10.4}  {:>7}  {:>9.4}  {:>9.4}  {:>8.4}",
-                rank + 1, pt.k_regimes, feature_family_name(&pt.feature_family),
-                pt.threshold, pt.persistence_required, pt.coverage, pt.precision_like, pt.score,
+                rank + 1,
+                pt.k_regimes,
+                feature_family_name(&pt.feature_family),
+                pt.threshold,
+                pt.persistence_required,
+                pt.coverage,
+                pt.precision_like,
+                pt.score,
             ));
         }
     } else {
-        summary_lines.push(format!("  {:>4}  {:>10}  {:>11}  {:>8}  {:>9}  {:>9}  {:>8}",
-            "rank", "threshold", "persistence", "cooldown", "coverage", "precision", "score"));
+        summary_lines.push(format!(
+            "  {:>4}  {:>10}  {:>11}  {:>8}  {:>9}  {:>9}  {:>8}",
+            "rank", "threshold", "persistence", "cooldown", "coverage", "precision", "score"
+        ));
         summary_lines.push(format!("  {}", "-".repeat(65)));
         for (rank, pt) in opt.points.iter().take(top_n).enumerate() {
             summary_lines.push(format!(
                 "  {:>4}  {:>10.4}  {:>11}  {:>8}  {:>9.4}  {:>9.4}  {:>8.4}",
-                rank + 1, pt.threshold, pt.persistence_required, pt.cooldown,
-                pt.coverage, pt.precision_like, pt.score,
+                rank + 1,
+                pt.threshold,
+                pt.persistence_required,
+                pt.cooldown,
+                pt.coverage,
+                pt.precision_like,
+                pt.score,
             ));
         }
     }
@@ -1971,9 +2355,7 @@ fn direct_compare_runs(args: &[String]) -> anyhow::Result<()> {
 
     let dirs = collect_flag_values(args, "--dir");
     if dirs.is_empty() {
-        anyhow::bail!(
-            "Usage: compare-runs --dir <run-dir> [--dir <run-dir> ...] [--save <path>]"
-        );
+        anyhow::bail!("Usage: compare-runs --dir <run-dir> [--dir <run-dir> ...] [--save <path>]");
     }
     let save_to = flag_value(args, "--save");
 
@@ -2012,20 +2394,42 @@ fn print_help() {
     println!("  cargo run -- <subcommand> [options]   # direct command");
     println!();
     println!("SUBCOMMANDS:");
-    println!("  e2e                                          Run all registered synthetic experiments");
-    println!("  param-search  [--id <experiment_id>]         Grid search over detector params (DryRun)");
-    println!("  optimize      --id <id> [--cache <path>]     Grid search on real data then full E2E");
+    println!(
+        "  e2e                                          Run all registered synthetic experiments"
+    );
+    println!(
+        "  param-search  [--id <experiment_id>]         Grid search over detector params (DryRun)"
+    );
+    println!(
+        "  optimize      --id <id> [--cache <path>]     Grid search on real data then full E2E"
+    );
     println!("                [--save <dir>] [--top <n>]      Add --model to also sweep k_regimes");
-    println!("                [--model]                        and feature families (joint search)");
-    println!("  run-experiment  --config <path.json>         Run single experiment (DryRun/Synthetic)");
+    println!(
+        "                [--model]                        and feature families (joint search)"
+    );
+    println!(
+        "  run-experiment  --config <path.json>         Run single experiment (DryRun/Synthetic)"
+    );
     println!("  run-batch       --config a.json [...]        Run batch from files");
-    println!("  run-real        --id <id> [--cache <path>]   Run a real-data experiment by registry ID");
-    println!("  calibrate       --id <id> [--cache <path>]   Calibrate any experiment (synthetic or real)");
+    println!(
+        "  run-real        --id <id> [--cache <path>]   Run a real-data experiment by registry ID"
+    );
+    println!(
+        "  calibrate       --id <id> [--cache <path>]   Calibrate any experiment (synthetic or real)"
+    );
     println!("  compare-runs    --dir <dir> [--dir <dir> ...]  Aggregate metrics across run dirs");
     println!("                  [--save <path>]");
+    println!(
+        "  compare-sim-vs-real --id <simreal_id>        Run SimToReal + train-on-real comparator"
+    );
+    println!("                  [--cache <path>] [--save <out_dir>]");
     println!("  inspect         --dir <run-directory>        Inspect run artifacts");
-    println!("  generate-report --dir <run-directory>        Regenerate plots/artifacts from config snapshot");
-    println!("                  [--cache <path>]              (re-runs EM; use for real-data reports)");
+    println!(
+        "  generate-report --dir <run-directory>        Regenerate plots/artifacts from config snapshot"
+    );
+    println!(
+        "                  [--cache <path>]              (re-runs EM; use for real-data reports)"
+    );
     println!("  status          [--config <path.toml>]       Show data cache status");
     println!("  help                                         Show this message");
 }
@@ -2048,9 +2452,7 @@ fn print_config_block(cfg: &ExperimentConfig) {
             horizon,
             ..
         } => {
-            println!(
-                "    Data       : Synthetic  scenario={scenario_id}  horizon={horizon}"
-            );
+            println!("    Data       : Synthetic  scenario={scenario_id}  horizon={horizon}");
         }
         DataConfig::Real {
             asset,
@@ -2065,10 +2467,19 @@ fn print_config_block(cfg: &ExperimentConfig) {
                 (None, Some(e)) => format!("(earliest) .. {e}"),
                 (None, None) => "all available".to_string(),
             };
-            println!(
-                "    Data       : Real  asset={asset}  {frequency:?}  dataset={dataset_id}"
-            );
+            println!("    Data       : Real  asset={asset}  {frequency:?}  dataset={dataset_id}");
             println!("    Date range : {range}");
+        }
+        DataConfig::CalibratedSynthetic {
+            real_asset,
+            real_frequency,
+            real_dataset_id,
+            horizon,
+            ..
+        } => {
+            println!(
+                "    Data       : CalibratedSynthetic  real={real_asset}  {real_frequency:?}  dataset={real_dataset_id}  horizon={horizon}"
+            );
         }
     }
     println!(
@@ -2088,9 +2499,7 @@ fn print_config_block(cfg: &ExperimentConfig) {
     );
     match &cfg.evaluation {
         EvaluationConfig::Synthetic { matching_window } => {
-            println!(
-                "    Evaluation : Synthetic  matching_window={matching_window}"
-            );
+            println!("    Evaluation : Synthetic  matching_window={matching_window}");
         }
         EvaluationConfig::Real {
             route_a_point_pre_bars,
@@ -2104,10 +2513,7 @@ fn print_config_block(cfg: &ExperimentConfig) {
         }
     }
     if let Some(seed) = cfg.reproducibility.seed {
-        println!(
-            "    Seed       : {}  output={}",
-            seed, cfg.output.root_dir
-        );
+        println!("    Seed       : {}  output={}", seed, cfg.output.root_dir);
     } else {
         println!("    Seed       : (none)  output={}", cfg.output.root_dir);
     }
@@ -2116,10 +2522,7 @@ fn print_config_block(cfg: &ExperimentConfig) {
 fn print_stage_log(cfg: &ExperimentConfig, result: &ExperimentResult) {
     let n_stages = result.timings.len();
     for (i, timing) in result.timings.iter().enumerate() {
-        let failed = if let RunStatus::Failed {
-            stage: ref fs, ..
-        } = result.status
-        {
+        let failed = if let RunStatus::Failed { stage: ref fs, .. } = result.status {
             *fs == timing.stage
         } else {
             false
@@ -2134,11 +2537,19 @@ fn print_stage_log(cfg: &ExperimentConfig, result: &ExperimentResult) {
                     ..
                 } => format!("dataset=synthetic:{scenario_id}  n={horizon}"),
                 DataConfig::Real { dataset_id, .. } => format!("dataset=real:{dataset_id}"),
+                DataConfig::CalibratedSynthetic {
+                    real_dataset_id,
+                    horizon,
+                    ..
+                } => {
+                    format!("dataset=simreal:{real_dataset_id}  horizon={horizon}")
+                }
             },
             RunStage::BuildFeatures => {
                 let n = match &cfg.data {
                     DataConfig::Synthetic { horizon, .. } => horizon.saturating_sub(1),
                     DataConfig::Real { .. } => result.n_feature_obs.unwrap_or(0),
+                    DataConfig::CalibratedSynthetic { .. } => result.n_feature_obs.unwrap_or(0),
                 };
                 format!(
                     "family={:?}  scaling={:?}  session_aware={}  n_feature_obs={}",
@@ -2158,10 +2569,7 @@ fn print_stage_log(cfg: &ExperimentConfig, result: &ExperimentResult) {
                     if let Some(fp) = &ms.fitted_params {
                         format!(
                             "{}  LL={:.2}  iter={}  converged={}",
-                            base,
-                            fp.log_likelihood,
-                            fp.n_iter,
-                            fp.converged
+                            base, fp.log_likelihood, fp.n_iter, fp.converged
                         )
                     } else {
                         base
@@ -2181,6 +2589,7 @@ fn print_stage_log(cfg: &ExperimentConfig, result: &ExperimentResult) {
                                 .as_ref()
                                 .map_or(0, |ds| ds.alarm_indices.last().copied().unwrap_or(0))
                         }),
+                    DataConfig::CalibratedSynthetic { .. } => result.n_feature_obs.unwrap_or(0),
                 };
                 result
                     .detector_summary
@@ -2207,8 +2616,12 @@ fn print_stage_log(cfg: &ExperimentConfig, result: &ExperimentResult) {
                     precision,
                     ..
                 }) => {
-                    let prec = precision.map(|p| format!("{p:.4}")).unwrap_or_else(|| format!("{precision_like:.4}"));
-                    let rec = recall.map(|r| format!("{r:.4}")).unwrap_or_else(|| format!("{coverage:.4}"));
+                    let prec = precision
+                        .map(|p| format!("{p:.4}"))
+                        .unwrap_or_else(|| format!("{precision_like:.4}"));
+                    let rec = recall
+                        .map(|r| format!("{r:.4}"))
+                        .unwrap_or_else(|| format!("{coverage:.4}"));
                     format!("precision={prec}  recall={rec}  n_events={n_events}")
                 }
                 Some(EvaluationSummary::Real {
@@ -2263,14 +2676,22 @@ fn print_run_result_summary(result: &ExperimentResult) {
                 let rec = recall.unwrap_or(*coverage);
                 println!(
                     "  Metrics  : prec={:.4}  recall={:.4}  n_events={}  n_alarms={}",
-                    prec, rec, n_events,
+                    prec,
+                    rec,
+                    n_events,
                     result.detector_summary.as_ref().map_or(0, |d| d.n_alarms)
                 );
                 if let Some(mr) = miss_rate {
-                    println!("  Miss rate: {mr:.4}  FAR: {:.6}", false_alarm_rate.unwrap_or(0.0));
+                    println!(
+                        "  Miss rate: {mr:.4}  FAR: {:.6}",
+                        false_alarm_rate.unwrap_or(0.0)
+                    );
                 }
                 if let Some(dm) = delay_mean {
-                    println!("  Delay    : mean={dm:.1}  median={:.1}", delay_median.unwrap_or(0.0));
+                    println!(
+                        "  Delay    : mean={dm:.1}  median={:.1}",
+                        delay_median.unwrap_or(0.0)
+                    );
                 }
             }
             EvaluationSummary::Real {
@@ -2292,39 +2713,40 @@ fn print_run_result_summary(result: &ExperimentResult) {
 fn build_metrics_table(results: &[&ExperimentResult]) -> String {
     let mut builder = MetricsTableBuilder::new();
     for result in results {
-        let (coverage, precision, delay_mean_val, delay_median_val, n_alarms) = match &result.evaluation_summary {
-            Some(EvaluationSummary::Synthetic {
-                coverage,
-                precision_like,
-                precision,
-                recall,
-                delay_mean,
-                delay_median,
-                ..
-            }) => (
-                Some(recall.unwrap_or(*coverage)),
-                Some(precision.unwrap_or(*precision_like)),
-                *delay_mean,
-                *delay_median,
-                result.detector_summary.as_ref().map_or(0, |d| d.n_alarms),
-            ),
-            Some(EvaluationSummary::Real {
-                event_coverage,
-                alarm_relevance,
-                ..
-            }) => (
-                Some(*event_coverage),
-                Some(*alarm_relevance),
-                None,
-                None,
-                result.detector_summary.as_ref().map_or(0, |d| d.n_alarms),
-            ),
-            None => (None, None, None, None, 0),
-        };
-        let (detector_type, threshold) = result
-            .detector_summary
-            .as_ref()
-            .map_or_else(|| ("unknown".to_string(), 0.0), |d| (d.detector_type.clone(), d.threshold));
+        let (coverage, precision, delay_mean_val, delay_median_val, n_alarms) =
+            match &result.evaluation_summary {
+                Some(EvaluationSummary::Synthetic {
+                    coverage,
+                    precision_like,
+                    precision,
+                    recall,
+                    delay_mean,
+                    delay_median,
+                    ..
+                }) => (
+                    Some(recall.unwrap_or(*coverage)),
+                    Some(precision.unwrap_or(*precision_like)),
+                    *delay_mean,
+                    *delay_median,
+                    result.detector_summary.as_ref().map_or(0, |d| d.n_alarms),
+                ),
+                Some(EvaluationSummary::Real {
+                    event_coverage,
+                    alarm_relevance,
+                    ..
+                }) => (
+                    Some(*event_coverage),
+                    Some(*alarm_relevance),
+                    None,
+                    None,
+                    result.detector_summary.as_ref().map_or(0, |d| d.n_alarms),
+                ),
+                None => (None, None, None, None, 0),
+            };
+        let (detector_type, threshold) = result.detector_summary.as_ref().map_or_else(
+            || ("unknown".to_string(), 0.0),
+            |d| (d.detector_type.clone(), d.threshold),
+        );
         builder.add_row(MetricsTableRow {
             run_id: result.metadata.run_id.clone(),
             scenario_or_asset: result.metadata.run_label.clone(),
@@ -2380,7 +2802,10 @@ fn print_search_results(results: &[SearchPoint], top_n: usize) {
 fn load_experiment_config(path: &str) -> anyhow::Result<ExperimentConfig> {
     let content =
         fs::read_to_string(path).map_err(|e| anyhow::anyhow!("Cannot read '{path}': {e}"))?;
-    if std::path::Path::new(path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("toml")) {
+    if std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+    {
         toml::from_str(&content).map_err(|e| anyhow::anyhow!("TOML parse error: {e}"))
     } else {
         serde_json::from_str(&content).map_err(|e| anyhow::anyhow!("JSON parse error: {e}"))
@@ -2409,10 +2834,7 @@ fn show_json_file(path: &Path) {
                 .unwrap_or(content);
             println!();
             println!("  {}:", path.display());
-            println!(
-                "  {}",
-                "-".repeat(60.min(path.to_string_lossy().len() + 1))
-            );
+            println!("  {}", "-".repeat(60.min(path.to_string_lossy().len() + 1)));
             for line in display.lines().take(60) {
                 println!("  {line}");
             }

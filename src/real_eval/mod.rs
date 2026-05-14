@@ -11,7 +11,7 @@ pub mod report;
 pub mod route_a;
 pub mod route_b;
 
-pub use report::{RealEvalMeta, RealEvalResult, RealEvalSummaryRow, evaluate_real_data};
+pub use report::{RealEvalMeta, RealEvalResult, evaluate_real_data};
 pub use route_a::{
     EventAlignment, PointMatchPolicy, ProxyEvent, ProxyEventAnchor, ProxyEventEvaluationResult,
     RouteAConfig, evaluate_proxy_events,

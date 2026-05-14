@@ -347,7 +347,8 @@ pub fn fit_em(obs: &[f64], init_params: ModelParams, config: &EmConfig) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::super::{ModelParams, simulate};
+    use super::super::simulate::simulate;
+    use super::super::ModelParams;
     use super::*;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;

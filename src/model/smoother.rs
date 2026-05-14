@@ -185,7 +185,9 @@ pub fn smooth(params: &ModelParams, filter_result: &FilterResult) -> Result<Smoo
 
 #[cfg(test)]
 mod tests {
-    use super::super::{ModelParams, filter, simulate};
+    use super::super::filter::filter;
+    use super::super::simulate::simulate;
+    use super::super::ModelParams;
     use super::*;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;

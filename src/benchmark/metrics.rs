@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// Metric computation layer for the online benchmarking protocol.
 ///
 /// All metrics in this module are derived from a [`MatchResult`] and, where
@@ -9,7 +8,7 @@
 ///
 /// | Symbol | Name | Definition |
 /// |---|---|---|
-/// | M | True changepoints | `truth.m()` |
+/// | M | True changepoints | `truth.times.len()` |
 /// | N | Total alarms | `n_alarms()` |
 /// | TP | True-positive alarms | first match in window |
 /// | FP | False-positive alarms | `N − TP` |
@@ -23,14 +22,12 @@ use super::matching::MatchResult;
 // Summary statistics helper
 // =========================================================================
 
-/// Basic five-number summary over a `Vec<f64>`.
+/// Basic summary (count, mean, median) over a `Vec<f64>`.
 #[derive(Debug, Clone)]
 pub struct Summary {
     pub n: usize,
     pub mean: f64,
     pub median: f64,
-    pub min: f64,
-    pub max: f64,
 }
 
 impl Summary {
@@ -42,8 +39,6 @@ impl Summary {
                 n: 0,
                 mean: f64::NAN,
                 median: f64::NAN,
-                min: f64::NAN,
-                max: f64::NAN,
             };
         }
         let mean = values.iter().sum::<f64>() / n as f64;
@@ -53,15 +48,7 @@ impl Summary {
         } else {
             f64::midpoint(values[n / 2 - 1], values[n / 2])
         };
-        let min = values[0];
-        let max = values[n - 1];
-        Self {
-            n,
-            mean,
-            median,
-            min,
-            max,
-        }
+        Self { n, mean, median }
     }
 }
 
@@ -76,16 +63,10 @@ impl Summary {
 #[derive(Debug, Clone)]
 pub struct MetricSuite {
     // --- Event counts -------------------------------------------------------
-    /// M — total true changepoints.
-    pub n_changepoints: usize,
-    /// N — total detector alarms.
-    pub n_alarms: usize,
     /// TP — true-positive alarms.
     pub n_true_positive: usize,
     /// FP — false-positive alarms.
     pub n_false_positive: usize,
-    /// M_det — matched (detected) changepoints.
-    pub n_detected: usize,
     /// M_miss — missed changepoints.
     pub n_missed: usize,
 
@@ -106,11 +87,9 @@ pub struct MetricSuite {
     ///
     /// False positives per observation.  Multiply by 1000 for "per 1k obs."
     pub false_alarm_rate: f64,
-    /// Time of the first false-positive alarm.  `None` if no false alarms.
-    pub first_false_alarm_t: Option<usize>,
 
     // --- Detection delay ----------------------------------------------------
-    /// Summary statistics (mean, median, min, max) over detection delays of
+    /// Summary statistics (n, mean, median) over detection delays of
     /// all matched changepoints.  Fields are `NaN` if no changepoints were
     /// detected.
     pub delay: Summary,
@@ -146,23 +125,18 @@ impl MetricSuite {
         } else {
             n_false_positive as f64 / m.stream_len as f64
         };
-        let first_false_alarm_t = m.first_false_alarm_t();
 
         let mut delay_values: Vec<f64> = m.delays().into_iter().map(|d| d as f64).collect();
         let delay = Summary::from_slice(&mut delay_values);
 
         Self {
-            n_changepoints,
-            n_alarms,
             n_true_positive,
             n_false_positive,
-            n_detected,
             n_missed,
             precision,
             recall,
             miss_rate,
             false_alarm_rate,
-            first_false_alarm_t,
             delay,
         }
     }
@@ -237,7 +211,7 @@ mod tests {
     fn first_false_alarm_none_when_no_fp() {
         let r = run_match(vec![50], vec![52], 10);
         let m = MetricSuite::from_match(&r);
-        assert!(m.first_false_alarm_t.is_none());
+        assert_eq!(m.n_false_positive, 0);
     }
 
     #[test]
@@ -245,7 +219,8 @@ mod tests {
         // alarm at 10 is FP (before τ=50), alarm at 52 is TP
         let r = run_match(vec![50], vec![10, 52], 10);
         let m = MetricSuite::from_match(&r);
-        assert_eq!(m.first_false_alarm_t, Some(10));
+        assert_eq!(m.n_false_positive, 1);
+        assert_eq!(m.n_true_positive, 1);
     }
 
     // --- delay summary ------------------------------------------------------
@@ -263,8 +238,8 @@ mod tests {
         let r = run_match(vec![50, 100], vec![52, 103], 10);
         let m = MetricSuite::from_match(&r);
         assert!((m.delay.mean - 2.5).abs() < 1e-12);
-        assert!((m.delay.min - 2.0).abs() < 1e-12);
-        assert!((m.delay.max - 3.0).abs() < 1e-12);
+        assert!((m.delay.median - 2.5).abs() < 1e-12);
+        assert_eq!(m.delay.n, 2);
     }
 
     // --- no-change stream ---------------------------------------------------

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
@@ -6,11 +5,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use super::artifact::{prepare_run_dir, snapshot_config, snapshot_result, write_json_file};
 use super::config::{DataConfig, EvaluationConfig, ExperimentConfig, ExperimentMode, TrainingMode};
-use crate::reporting::{RunArtifactLayout, RunReporter};
 use super::result::{
     ArtifactRef, DetectorSummary, EvaluationSummary, ExperimentResult, FittedParamsSummary,
     ModelSummary, RunMetadata, RunStage, RunStatus, StageTiming,
 };
+use crate::reporting::{RunArtifactLayout, RunReporter};
 
 #[derive(Debug, Clone)]
 pub struct DataBundle {
@@ -28,6 +27,11 @@ pub struct DataBundle {
     pub split_summary_json: Option<String>,
     /// Data-quality validation report JSON (populated by RealBackend; None for synthetic/dry-run).
     pub validation_report_json: Option<String>,
+    /// Raw synthetic observations generated from the calibrated MSM, used
+    /// by `SimToRealBackend` to train the model on synthetic data while
+    /// still evaluating on the real series in `observations`.  Empty for
+    /// all other backends.
+    pub synthetic_observations: Vec<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,7 +43,14 @@ pub struct FeatureBundle {
     /// Training partition size (mirrors DataBundle::train_n after warmup trim).
     pub train_n: usize,
     /// Bar timestamps parallel to `observations`.  Empty for synthetic / dry-run.
+    /// Read only by the plotting layer, which is `#[cfg(not(test))]`.
+    #[cfg_attr(test, allow(dead_code))]
     pub timestamps: Vec<chrono::NaiveDateTime>,
+    /// Synthetic training stream after applying the same scaler that was
+    /// fitted on the real training partition.  Used by `SimToRealBackend`
+    /// to feed EM with synthetic data while the online filter consumes
+    /// the real `observations`.  Empty for all other backends.
+    pub synthetic_train_obs: Vec<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,7 +73,6 @@ pub struct ModelArtifact {
 
 #[derive(Debug, Clone)]
 pub struct OnlineRunArtifact {
-    pub n_steps: usize,
     pub n_alarms: usize,
     /// 1-based step indices at which alarms fired (empty in DryRunBackend).
     pub alarm_indices: Vec<usize>,
@@ -70,6 +80,9 @@ pub struct OnlineRunArtifact {
     pub score_trace: Vec<f64>,
     /// Filtered regime posteriors per step (empty unless save_traces = true).
     pub regime_posteriors: Vec<Vec<f64>>,
+    /// E2 — Ground-truth changepoint indices when available (e.g. synthetic
+    /// runs).  `None` for real-data backends where truth is unknown.
+    pub changepoint_truth: Option<Vec<usize>>,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +101,8 @@ pub struct SyntheticEvalArtifact {
     pub n_false_positive: Option<usize>,
     pub n_missed: Option<usize>,
     /// Per-event detection delays in bars; empty in DryRunBackend.
+    /// Read only by the plotting layer, which is `#[cfg(not(test))]`.
+    #[cfg_attr(test, allow(dead_code))]
     pub per_event_delays: Vec<usize>,
 }
 
@@ -141,11 +156,15 @@ impl ExperimentBackend for DryRunBackend {
         let n = match &cfg.data {
             DataConfig::Synthetic { horizon, .. } => *horizon,
             DataConfig::Real { .. } => 500,
+            DataConfig::CalibratedSynthetic { horizon, .. } => *horizon,
         };
         Ok(DataBundle {
             dataset_key: match &cfg.data {
                 DataConfig::Synthetic { scenario_id, .. } => format!("synthetic:{scenario_id}"),
                 DataConfig::Real { dataset_id, .. } => format!("real:{dataset_id}"),
+                DataConfig::CalibratedSynthetic { real_asset, .. } => {
+                    format!("simreal:{real_asset}")
+                }
             },
             n_observations: n,
             observations: vec![],
@@ -154,6 +173,7 @@ impl ExperimentBackend for DryRunBackend {
             timestamps: vec![],
             split_summary_json: None,
             validation_report_json: None,
+            synthetic_observations: Vec::new(),
         })
     }
 
@@ -169,6 +189,7 @@ impl ExperimentBackend for DryRunBackend {
             observations: vec![],
             train_n: (n as f64 * 0.7) as usize,
             timestamps: vec![],
+            synthetic_train_obs: Vec::new(),
         })
     }
 
@@ -205,11 +226,11 @@ impl ExperimentBackend for DryRunBackend {
         let alarms =
             ((base / 100.0) * (1.0 + cfg.detector.threshold.abs() / 10.0)).round() as usize;
         Ok(OnlineRunArtifact {
-            n_steps: features.n_observations,
             n_alarms: alarms,
             alarm_indices: vec![],
             score_trace: vec![],
             regime_posteriors: vec![],
+            changepoint_truth: None,
         })
     }
 
@@ -283,6 +304,7 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
         let mode_str = match cfg.mode {
             ExperimentMode::Synthetic => "synthetic",
             ExperimentMode::Real => "real",
+            ExperimentMode::SimToReal => "sim_to_real",
         }
         .to_string();
 
@@ -417,7 +439,11 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
         let online = match timed_stage(RunStage::RunOnline, &mut timings, || {
             self.backend.run_online(&cfg, &model, &features)
         }) {
-            Ok(v) => {
+            Ok(mut v) => {
+                // E2 — plumb ground-truth changepoints (synthetic only) through.
+                if v.changepoint_truth.is_none() {
+                    v.changepoint_truth = data.changepoint_truth.clone();
+                }
                 detector_summary = Some(DetectorSummary {
                     detector_type: format!("{:?}", cfg.detector.detector_type),
                     threshold: cfg.detector.threshold,
@@ -450,27 +476,36 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
         let mut syn_eval_artifact: Option<SyntheticEvalArtifact> = None;
         let eval_t0 = Instant::now();
         let eval_out: anyhow::Result<EvaluationSummary> = match cfg.mode {
-            ExperimentMode::Synthetic => {
-                self.backend.evaluate_synthetic(&cfg, &online).map(|s| {
-                    let summary = EvaluationSummary::Synthetic {
-                        n_events: s.n_events,
-                        coverage: s.coverage,
-                        precision_like: s.precision_like,
-                        precision: s.precision,
-                        recall: s.recall,
-                        miss_rate: s.miss_rate,
-                        false_alarm_rate: s.false_alarm_rate,
-                        delay_mean: s.delay_mean,
-                        delay_median: s.delay_median,
-                        n_true_positive: s.n_true_positive,
-                        n_false_positive: s.n_false_positive,
-                        n_missed: s.n_missed,
-                    };
-                    syn_eval_artifact = Some(s);
-                    summary
-                })
-            }
-            ExperimentMode::Real => {
+            ExperimentMode::Synthetic => self.backend.evaluate_synthetic(&cfg, &online).map(|s| {
+                let summary = EvaluationSummary::Synthetic {
+                    n_events: s.n_events,
+                    coverage: s.coverage,
+                    precision_like: s.precision_like,
+                    precision: s.precision,
+                    recall: s.recall,
+                    miss_rate: s.miss_rate,
+                    false_alarm_rate: s.false_alarm_rate,
+                    delay_mean: s.delay_mean,
+                    delay_median: s.delay_median,
+                    n_true_positive: s.n_true_positive,
+                    n_false_positive: s.n_false_positive,
+                    n_missed: s.n_missed,
+                };
+                syn_eval_artifact = Some(s);
+                summary
+            }),
+            ExperimentMode::Real => self.backend.evaluate_real(&cfg, &online).map(|artifact| {
+                let summary = EvaluationSummary::Real {
+                    event_coverage: artifact.event_coverage,
+                    alarm_relevance: artifact.alarm_relevance,
+                    segmentation_coherence: artifact.segmentation_coherence,
+                };
+                real_eval_artifact = Some(artifact);
+                summary
+            }),
+            ExperimentMode::SimToReal => {
+                // Sim-to-real evaluates on the real test partition — same
+                // Route A + Route B as a regular real-data run.
                 self.backend.evaluate_real(&cfg, &online).map(|artifact| {
                     let summary = EvaluationSummary::Real {
                         event_coverage: artifact.event_coverage,
@@ -604,7 +639,10 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
 
         // Generate metrics tables (metrics.md / metrics.csv / metrics.tex).
         if cfg.output.write_json {
-            let layout = RunArtifactLayout { run_id: run_id.clone(), root: run_dir.clone() };
+            let layout = RunArtifactLayout {
+                run_id: run_id.clone(),
+                root: run_dir.clone(),
+            };
             let reporter = RunReporter::new(layout);
             if let Err(e) = reporter.generate_tables(&result) {
                 warnings.push(format!("generate_tables failed: {e}"));
@@ -659,7 +697,10 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
             && !fp.ll_history.is_empty()
         {
             let ll_path = run_dir.join("loglikelihood_history.csv");
-            let rows: Vec<String> = fp.ll_history.iter().enumerate()
+            let rows: Vec<String> = fp
+                .ll_history
+                .iter()
+                .enumerate()
                 .map(|(i, &ll)| format!("{i},{ll:.8}"))
                 .collect();
             let content = format!("iteration,log_likelihood\n{}", rows.join("\n"));
@@ -679,8 +720,8 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
                 (0.0_f64, 0.0_f64)
             } else {
                 let m = obs_slice.iter().sum::<f64>() / obs_slice.len() as f64;
-                let v = obs_slice.iter().map(|x| (x - m).powi(2)).sum::<f64>()
-                    / obs_slice.len() as f64;
+                let v =
+                    obs_slice.iter().map(|x| (x - m).powi(2)).sum::<f64>() / obs_slice.len() as f64;
                 (m, v)
             };
             let fmin = obs_slice.iter().copied().fold(f64::INFINITY, f64::min);
@@ -716,7 +757,8 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
         }
 
         // Export score trace and alarm list as CSV if save_traces = true
-        if cfg.output.save_traces && cfg.output.write_csv {            if !result.score_trace.is_empty() {
+        if cfg.output.save_traces && cfg.output.write_csv {
+            if !result.score_trace.is_empty() {
                 let trace_path = run_dir.join("score_trace.csv");
                 let rows: Vec<String> = result
                     .score_trace
@@ -736,21 +778,21 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
             if let Some(ds) = &result.detector_summary
                 && !ds.alarm_indices.is_empty()
             {
-                    let alarm_path = run_dir.join("alarms.csv");
-                    let rows: Vec<String> = ds
-                        .alarm_indices
-                        .iter()
-                        .enumerate()
-                        .map(|(i, t)| format!("{},{}", i + 1, t))
-                        .collect();
-                    let content = format!("alarm_n,t\n{}", rows.join("\n"));
-                    if let Ok(()) = std::fs::write(&alarm_path, content) {
-                        result.artifacts.push(ArtifactRef {
-                            name: "alarms".to_string(),
-                            path: alarm_path.to_string_lossy().to_string(),
-                            kind: "csv".to_string(),
-                        });
-                    }
+                let alarm_path = run_dir.join("alarms.csv");
+                let rows: Vec<String> = ds
+                    .alarm_indices
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| format!("{},{}", i + 1, t))
+                    .collect();
+                let content = format!("alarm_n,t\n{}", rows.join("\n"));
+                if let Ok(()) = std::fs::write(&alarm_path, content) {
+                    result.artifacts.push(ArtifactRef {
+                        name: "alarms".to_string(),
+                        path: alarm_path.to_string_lossy().to_string(),
+                        kind: "csv".to_string(),
+                    });
+                }
             }
         }
 
@@ -809,8 +851,7 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
                 .iter()
                 .enumerate()
                 .map(|(i, post)| {
-                    let vals: Vec<String> =
-                        post.iter().map(|v| format!("{v:.8}")).collect();
+                    let vals: Vec<String> = post.iter().map(|v| format!("{v:.8}")).collect();
                     format!("{},{}", i + 1, vals.join(","))
                 })
                 .collect();
@@ -853,12 +894,22 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
         }
 
         // Save split_summary.json and data_quality.json (populated by RealBackend).
+        // For sim-to-real runs, the same JSON blob captures the synthetic
+        // training provenance — write it under the dedicated filename
+        // `synthetic_training_provenance.json` (A′4 artifact).
         if cfg.output.write_json {
             if let Some(ref json) = data.split_summary_json {
-                let path = run_dir.join("split_summary.json");
+                let (filename, artifact_name) = match cfg.mode {
+                    ExperimentMode::SimToReal => (
+                        "synthetic_training_provenance.json",
+                        "synthetic_training_provenance",
+                    ),
+                    _ => ("split_summary.json", "split_summary"),
+                };
+                let path = run_dir.join(filename);
                 if let Ok(()) = std::fs::write(&path, json) {
                     result.artifacts.push(ArtifactRef {
-                        name: "split_summary".to_string(),
+                        name: artifact_name.to_string(),
                         path: path.to_string_lossy().to_string(),
                         kind: "json".to_string(),
                     });
@@ -898,6 +949,39 @@ impl<B: ExperimentBackend> ExperimentRunner<B> {
                         path: path.to_string_lossy().to_string(),
                         kind: "json".to_string(),
                     });
+                }
+            }
+
+            // D′1 sim-to-real summary: collate train_source + test_source +
+            // synthetic-trained model params + real-eval metrics into a
+            // single side-by-side artifact for the thesis figure pipeline.
+            if matches!(cfg.mode, ExperimentMode::SimToReal) {
+                let summary_json = serde_json::json!({
+                    "run_id": result.metadata.run_id,
+                    "dataset_key": data.dataset_key,
+                    "train_source": "synthetic (calibrated from real-train)",
+                    "test_source": format!("real {}", data.dataset_key),
+                    "n_real_observations": data.n_observations,
+                    "n_synthetic_observations": data.synthetic_observations.len(),
+                    "provenance": data.split_summary_json.as_deref()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()),
+                    "model_params_synthetic_trained":
+                        result.model_summary.as_ref().and_then(|ms| ms.fitted_params.as_ref()),
+                    "eval_real_metrics": {
+                        "event_coverage": rfa.event_coverage,
+                        "alarm_relevance": rfa.alarm_relevance,
+                        "segmentation_coherence": rfa.segmentation_coherence,
+                    },
+                });
+                if let Ok(text) = serde_json::to_string_pretty(&summary_json) {
+                    let path = run_dir.join("sim_to_real_summary.json");
+                    if std::fs::write(&path, text).is_ok() {
+                        result.artifacts.push(ArtifactRef {
+                            name: "sim_to_real_summary".to_string(),
+                            path: path.to_string_lossy().to_string(),
+                            kind: "json".to_string(),
+                        });
+                    }
                 }
             }
         }
@@ -1092,8 +1176,8 @@ fn generate_plots(
     real_eval: Option<&RealEvalArtifact>,
 ) {
     use crate::reporting::plot::{
-        render_detector_scores, render_regime_posteriors, render_signal_with_alarms,
         DetectorScoresPlotInput, RegimePosteriorPlotInput, SignalWithAlarmsPlotInput,
+        render_detector_scores, render_regime_posteriors, render_signal_with_alarms,
     };
 
     let n_obs = features.observations.len();
@@ -1190,7 +1274,7 @@ fn generate_plots(
     if let Some(se) = syn_eval
         && !se.per_event_delays.is_empty()
     {
-        use crate::reporting::plot::{render_delay_distribution, DelayDistributionPlotInput};
+        use crate::reporting::plot::{DelayDistributionPlotInput, render_delay_distribution};
         let delay_input = DelayDistributionPlotInput {
             delays: se.per_event_delays.clone(),
             title: format!("{} — Detection Delay Distribution", cfg.meta.run_label),
@@ -1211,7 +1295,7 @@ fn generate_plots(
         && let Some(ref route_b_json) = re.route_b_result_json
     {
         use crate::real_eval::route_b::SegmentationEvaluationResult;
-        use crate::reporting::plot::{render_segmentation, SegmentationPlotInput};
+        use crate::reporting::plot::{SegmentationPlotInput, render_segmentation};
         if let Ok(route_b) = serde_json::from_str::<SegmentationEvaluationResult>(route_b_json) {
             let seg_ts = ensure_plot_timestamps(&features.timestamps, features.observations.len());
             let segs: Vec<_> = route_b
@@ -1338,6 +1422,7 @@ fn diagnostics_to_json(diag: &crate::model::FittedModelDiagnostics) -> serde_jso
 /// Returns `stored` as UTC if non-empty, otherwise synthesises sequential
 /// day-indexed timestamps from 2000-01-01 (used for synthetic experiments
 /// that have no real timestamps).
+#[cfg(not(test))]
 fn ensure_plot_timestamps(
     stored: &[chrono::NaiveDateTime],
     n: usize,
@@ -1381,6 +1466,7 @@ mod tests {
                 timestamps: vec![],
                 split_summary_json: None,
                 validation_report_json: None,
+                synthetic_observations: Vec::new(),
             })
         }
         fn build_features(
@@ -1441,6 +1527,16 @@ mod tests {
                     date_start: None,
                     date_end: None,
                 },
+                ExperimentMode::SimToReal => DataConfig::CalibratedSynthetic {
+                    real_asset: "SPY".to_string(),
+                    real_frequency: crate::experiments::config::RealFrequency::Daily,
+                    real_dataset_id: "spy_daily".to_string(),
+                    real_date_start: None,
+                    real_date_end: None,
+                    horizon: 200,
+                    mapping: crate::calibration::CalibrationMappingConfig::default(),
+                    dataset_id: None,
+                },
             },
             features: FeatureConfig {
                 family: FeatureFamilyConfig::LogReturn,
@@ -1464,6 +1560,13 @@ mod tests {
             evaluation: match mode {
                 ExperimentMode::Synthetic => EvaluationConfig::Synthetic { matching_window: 5 },
                 ExperimentMode::Real => EvaluationConfig::Real {
+                    proxy_events_path: String::new(),
+                    route_a_point_pre_bars: 2,
+                    route_a_point_post_bars: 2,
+                    route_a_causal_only: true,
+                    route_b_min_segment_len: 5,
+                },
+                ExperimentMode::SimToReal => EvaluationConfig::Real {
                     proxy_events_path: String::new(),
                     route_a_point_pre_bars: 2,
                     route_a_point_post_bars: 2,

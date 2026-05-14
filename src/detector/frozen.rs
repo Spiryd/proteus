@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// Fixed-parameter policy for the offline-trained, online-filtered detector.
 ///
 /// # Design decision

@@ -92,11 +92,8 @@ Defined in `src/model/simulate.rs`.
 
 ```rust
 pub struct SimulationResult {
-    pub t: usize,                // T — number of time steps
-    pub k: usize,                // K — number of regimes
     pub states: Vec<usize>,      // hidden path S₁,…,S_T  (0-based indices)
     pub observations: Vec<f64>,  // observation sequence y₁,…,y_T
-    pub params: ModelParams,     // parameter set that generated this sample
 }
 ```
 

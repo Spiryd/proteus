@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Observation-family configuration for the financial feature pipeline.
 //!
 //! # The central design decision
@@ -117,14 +116,6 @@ impl FeatureFamily {
             }
         }
     }
-
-    /// Whether this family requires a rolling-window computation.
-    pub fn is_rolling(&self) -> bool {
-        matches!(
-            self,
-            Self::RollingVol { .. } | Self::StandardizedReturn { .. }
-        )
-    }
 }
 
 // =========================================================================
@@ -165,26 +156,5 @@ mod tests {
         };
         assert!(fam.label().contains("15"));
         assert!(fam.label().contains("sr1"));
-    }
-
-    #[test]
-    fn is_rolling_flag_correct() {
-        assert!(!FeatureFamily::LogReturn.is_rolling());
-        assert!(!FeatureFamily::AbsReturn.is_rolling());
-        assert!(
-            FeatureFamily::RollingVol {
-                window: 5,
-                session_reset: false
-            }
-            .is_rolling()
-        );
-        assert!(
-            FeatureFamily::StandardizedReturn {
-                window: 5,
-                epsilon: 1e-8,
-                session_reset: false
-            }
-            .is_rolling()
-        );
     }
 }

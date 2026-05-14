@@ -1,6 +1,7 @@
-#![allow(dead_code)]
+#[cfg(not(test))]
 use plotters::prelude::*;
 use serde::{Deserialize, Serialize};
+#[cfg(not(test))]
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -9,6 +10,7 @@ pub struct DelayDistributionPlotInput {
     pub title: String,
 }
 
+#[cfg(not(test))]
 pub fn render_delay_distribution(
     input: &DelayDistributionPlotInput,
     output_path: &Path,

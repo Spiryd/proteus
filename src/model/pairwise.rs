@@ -97,12 +97,6 @@ use super::smoother::SmootherResult;
 /// and the K × K matrix of posterior expected transition counts.
 #[derive(Debug, Clone)]
 pub struct PairwiseResult {
-    /// T — number of observations (same as the FilterResult it was derived from).
-    #[allow(dead_code)]
-    pub t: usize,
-    /// K — number of regimes.
-    #[allow(dead_code)]
-    pub k: usize,
     /// `xi[s][i][j]` = ξ_{s+2}(i,j) = Pr(S_{s+1}=i, S_{s+2}=j | y_{1:T}).
     ///
     /// 0-based index `s` ranges over `0..T-1`, corresponding to math steps t = 2..=T.
@@ -163,8 +157,6 @@ pub fn pairwise(
     // T=1: no transitions exist; return empty tensor.
     if t_len <= 1 {
         return Ok(PairwiseResult {
-            t: t_len,
-            k,
             xi: vec![],
             expected_transitions: vec![vec![0.0; k]; k],
         });
@@ -204,8 +196,6 @@ pub fn pairwise(
     }
 
     Ok(PairwiseResult {
-        t: t_len,
-        k,
         xi,
         expected_transitions,
     })
@@ -218,7 +208,9 @@ pub fn pairwise(
 #[cfg(test)]
 mod tests {
     use super::super::smoother::smooth;
-    use super::super::{ModelParams, filter, simulate};
+    use super::super::filter::filter;
+    use super::super::simulate::simulate;
+    use super::super::ModelParams;
     use super::*;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
@@ -239,8 +231,6 @@ mod tests {
         let t_len = fr.t;
         let k = fr.k;
 
-        assert_eq!(pr.t, t_len);
-        assert_eq!(pr.k, k);
         assert_eq!(pr.xi.len(), if t_len > 0 { t_len - 1 } else { 0 });
         assert_eq!(pr.expected_transitions.len(), k);
 

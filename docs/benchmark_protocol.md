@@ -403,7 +403,6 @@ let agg = AggregateResult::from_runs(&runs);
 | `matching` | `multiple_changepoints_matched_in_order` | Chronological matching |
 | `matching` | `no_change_stream_all_alarms_false_positive` | $M=0$ case |
 | `matching` | `no_alarms_all_changepoints_missed` | $N=0$ case |
-| `matching` | `first_false_alarm_time_correct` | RFFA field |
 | `matching` | `window_boundary_inclusive_start_exclusive_end` | $[τ, τ+w)$ semantics |
 | `metrics` | `perfect_detection_precision_recall_one` | Precision=Recall=1 |
 | `metrics` | `no_alarms_recall_zero_and_miss_rate_one` | NaN precision when $N=0$ |

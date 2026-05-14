@@ -147,9 +147,6 @@ impl OnlineFilterState {
     /// Process one new observation.  Mutates self in-place.
     /// params is read-only — never modified.
     pub fn step(&mut self, y: f64, params: &ModelParams) -> Result<OnlineStepResult>
-
-    /// Process a slice of observations sequentially.
-    pub fn step_batch(&mut self, obs: &[f64], params: &ModelParams) -> Result<Vec<OnlineStepResult>>
 }
 
 /// Causal output of one streaming step.
@@ -218,7 +215,7 @@ interchangeable:
   columns for all $T$ time steps.
 - `OnlineFilterState` stores only the *current* filtered vector.
 
-**Consistency invariant:** running `step_batch` on $y_{1:T}$ produces
+**Consistency invariant:** iterating `step` over $y_{1:T}$ produces
 `filtered[t]` that matches `FilterResult::filtered[t]` at every step, and
 `cumulative_log_score` that matches `FilterResult::log_likelihood`, both to
 floating-point precision ($< 10^{-8}$).  This is verified in the test suite.
@@ -250,7 +247,7 @@ floating-point precision ($< 10^{-8}$).  This is verified in the test suite.
 | `cumulative_log_score_matches_offline_filter` | Online log-score equals offline log-likelihood to $10^{-8}$ |
 | `filtered_matches_offline_filter_at_every_step` | `filtered[j]` matches `FilterResult::filtered[s][j]` to $10^{-12}$ at every step |
 | `predicted_next_matches_offline_filter_predicted` | `predicted_next[j]` matches `FilterResult::predicted[s+1][j]` to $10^{-12}$ |
-| `step_batch_equals_step_loop` | `step_batch` and loop over `step` produce identical results |
+| `step_loop_deterministic` | Two independent loops over `step` produce identical results |
 
 ### Edge cases (3)
 

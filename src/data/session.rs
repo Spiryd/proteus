@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// Intraday session handling: RTH filtering and session-boundary labelling.
 ///
 /// # Trading session conventions

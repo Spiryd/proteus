@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 /// Chronological train / validation / test splitting for time series.
 ///
 /// # Why chronological splitting is mandatory

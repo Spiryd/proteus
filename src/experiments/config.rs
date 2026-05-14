@@ -42,6 +42,9 @@ pub struct RunMetaConfig {
 pub enum ExperimentMode {
     Synthetic,
     Real,
+    /// Sim-to-real: train on a synthetic stream calibrated from a real source
+    /// series and evaluate on the held-out real test partition.
+    SimToReal,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -57,6 +60,25 @@ pub enum DataConfig {
         dataset_id: String,
         date_start: Option<String>,
         date_end: Option<String>,
+    },
+    /// Calibrated synthetic stream for sim-to-real training.
+    ///
+    /// The real source series (referenced inline by `real_*` fields) is
+    /// loaded; its training partition feeds the calibration mapping, which in
+    /// turn produces a synthetic generator of length `horizon`.
+    CalibratedSynthetic {
+        real_asset: String,
+        real_frequency: RealFrequency,
+        real_dataset_id: String,
+        real_date_start: Option<String>,
+        real_date_end: Option<String>,
+        /// Length of the synthetic stream used to train the model.
+        horizon: usize,
+        /// Mapping configuration (strategy / policies / horizon override is
+        /// driven by the top-level `horizon` field above).
+        mapping: crate::calibration::CalibrationMappingConfig,
+        #[serde(default)]
+        dataset_id: Option<String>,
     },
 }
 
@@ -83,6 +105,22 @@ impl DataConfig {
                 }
                 if dataset_id.trim().is_empty() {
                     anyhow::bail!("real dataset_id must be non-empty");
+                }
+            }
+            Self::CalibratedSynthetic {
+                real_asset,
+                real_dataset_id,
+                horizon,
+                ..
+            } => {
+                if real_asset.trim().is_empty() {
+                    anyhow::bail!("calibrated_synthetic real_asset must be non-empty");
+                }
+                if real_dataset_id.trim().is_empty() {
+                    anyhow::bail!("calibrated_synthetic real_dataset_id must be non-empty");
+                }
+                if *horizon < 2 {
+                    anyhow::bail!("calibrated_synthetic horizon must be >= 2");
                 }
             }
         }
@@ -252,12 +290,18 @@ impl EvaluationConfig {
     pub fn validate_for_mode(&self, mode: &ExperimentMode) -> anyhow::Result<()> {
         match (mode, self) {
             (ExperimentMode::Synthetic, EvaluationConfig::Synthetic { .. })
-            | (ExperimentMode::Real, EvaluationConfig::Real { .. }) => Ok(()),
+            | (ExperimentMode::Real, EvaluationConfig::Real { .. })
+            // Sim-to-real evaluates on the real test partition, so it reuses
+            // the Real evaluation config (Route A + Route B).
+            | (ExperimentMode::SimToReal, EvaluationConfig::Real { .. }) => Ok(()),
             (ExperimentMode::Synthetic, EvaluationConfig::Real { .. }) => {
                 anyhow::bail!("synthetic mode requires synthetic evaluation config")
             }
             (ExperimentMode::Real, EvaluationConfig::Synthetic { .. }) => {
                 anyhow::bail!("real mode requires real evaluation config")
+            }
+            (ExperimentMode::SimToReal, EvaluationConfig::Synthetic { .. }) => {
+                anyhow::bail!("sim_to_real mode requires real evaluation config")
             }
         }
     }
