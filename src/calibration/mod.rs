@@ -17,7 +17,7 @@ pub mod verify;
 
 pub use mapping::{
     CalibratedSyntheticParams, CalibrationMappingConfig, CalibrationStrategy, JumpContamination,
-    MeanPolicy, VariancePolicy, calibrate_to_synthetic,
+    MeanPolicy, PiPolicy, VariancePolicy, calibrate_to_synthetic,
 };
 pub use report::{CalibrationReport, CalibrationReportView, run_calibration_workflow};
 pub use summary::{

@@ -488,6 +488,70 @@ does not predict performance on the real stream's full serial structure
 one-for-one. This is the methodological cost of using an interpretable
 generator, and the calibration verdict makes it auditable.
 
+A concrete instance worked through in §5.8.5 below illustrates this
+auditability. *LogReturn on SPY daily has negative lag-1 autocorrelation,
+which is structurally outside the expressive range of a Gaussian MSM with
+$\mu_0 = \mu_1$; the sim-to-real bridge correctly surfaces this as a
+degenerate-$\pi$ fit and zero detector alarms, and the cure is to choose a
+feature whose autocorrelation lies inside the model class — AbsReturn at
+$\hat\rho_1 \approx 0.37$ is one such choice.*
+
+### 5.8.4 The $\pi$-policy for the synthetic generator
+
+The Quick-EM operator $\mathcal{K}_{\text{EM}}$ returns four estimators
+$(\hat\pi, \hat P, \hat\mu, \hat\Sigma)$. The initial distribution
+$\hat\pi$ is the *maximum-likelihood* assignment of probability mass to the
+starting regime of the *training partition*, and on series whose lag-1
+autocorrelation is outside the model's expressive range it can collapse to
+a near-degenerate point mass (e.g. $\hat\pi \approx (1, 0)$ on z-scored SPY
+daily log-returns — EM expresses the negative $\hat\rho_1(y)$ as "started
+in a tantrum, mean-reverted into calm"). For sim-to-real *detection*, $\pi$
+is then used twice: once as the initial state of the synthetic data
+generator, and once as the *filter prior* at the start of the real test
+stream — where there is no prior information about the regime.
+
+The principled choice is therefore to replace $\hat\pi$ with the stationary
+distribution $\pi^\star$ of the fitted chain, satisfying $\pi^\star =
+\pi^\star \hat P$, before the synthetic stream is emitted and before the
+filter is initialised. The thesis pipeline supports this via a
+`PiPolicy::{Fitted, Stationary}` knob on $\mathcal{K}_{\text{EM}}$; the
+default is `Stationary`. For the SPY daily example above, this replaces
+$\hat\pi = (1,\, 9.4 \cdot 10^{-12})$ with $\pi^\star \approx
+(0.286,\, 0.714)$.
+
+The policy is necessary but not sufficient: as the §5.8.5 sweep shows,
+stationary-$\pi$ alone does not rescue a structurally misspecified feature
+choice, but in combination with a feature inside the model class it
+recovers a working sim-to-real detector.
+
+### 5.8.5 Sim-to-real generalisation sweep
+
+Across three real assets with proxy event labels (SPY, WTI, GOLD daily),
+sim-trained and real-trained detectors are compared on Route A
+(`event_coverage`, `alarm_relevance`) and Route B
+(`segmentation_coherence`). The configuration is the §18-grid joint
+optimum (AbsReturn / $K = 3$ / HardSwitch $(0.55,\, 2,\, 5)$) with
+`PiPolicy::Stationary`. The full table is reproduced in
+`verification/sim_to_real_recovery_2026_05_15/sweep_summary.md`; the
+headline numbers are:
+
+| asset / feature | sim event_cov | real event_cov | sim coherence | real coherence |
+|---|---|---|---|---|
+| SPY LogReturn $K{=}2$ (counterexample) | 0.000 | 0.077 | 0.138 | 0.139 |
+| SPY AbsReturn $K{=}3$  | 0.077 | 0.692 | 0.301 | 0.459 |
+| WTI AbsReturn $K{=}3$  | 0.077 | 0.923 | **0.454** | 0.308 |
+| GOLD AbsReturn $K{=}3$ | **0.875** | 1.000 | 0.334 | 0.360 |
+
+GOLD daily is the existence proof: a detector trained entirely on
+synthetic data generated from $\hat\vartheta_{\text{EM}}$ recovers eight of
+the nine real proxy events, with `alarm_relevance` and
+`segmentation_coherence` within 14 % and 7 % of the real-trained baseline
+respectively. WTI exhibits the diagnostic pattern "sim-trained model is
+*more* internally consistent than the real-trained model (higher Route-B
+coherence) but rarely fires", isolating the remaining gap to
+detector-threshold calibration rather than model quality. SPY LogReturn
+preserves the counterexample.
+
 ---
 
 ## 5.9 The observation streams used in this thesis

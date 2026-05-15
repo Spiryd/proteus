@@ -86,6 +86,13 @@ pub struct EmpiricalCalibrationProfile {
 }
 
 pub fn summarize_observation_values(values: &[f64]) -> EmpiricalSummary {
+    // Drop non-finite observations defensively.  AbsReturn / LogReturn on
+    // some real assets (notoriously WTI 2020-04-20 with its negative spot
+    // print) can produce NaN/Inf at boundary points, which both breaks the
+    // sort below (Rust's slice sort validates total order and panics on
+    // NaN) and corrupts mean / variance / quantiles.
+    let values: Vec<f64> = values.iter().copied().filter(|x| x.is_finite()).collect();
+    let values: &[f64] = &values;
     if values.is_empty() {
         return EmpiricalSummary {
             n: 0,

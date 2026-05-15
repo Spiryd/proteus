@@ -62,6 +62,21 @@ pub fn registry() -> Vec<RegisteredExperiment> {
             build: simreal_spy_daily_hard_switch,
         },
         RegisteredExperiment {
+            id: "simreal_spy_daily_abs_return_k3",
+            description: "SPY daily  — Sim-to-real: AbsReturn / K=3 / HardSwitch (joint-optimum), stationary-π",
+            build: simreal_spy_daily_abs_return_k3,
+        },
+        RegisteredExperiment {
+            id: "simreal_wti_daily_abs_return_k3",
+            description: "WTI daily  — Sim-to-real: AbsReturn / K=3 / HardSwitch, stationary-π",
+            build: simreal_wti_daily_abs_return_k3,
+        },
+        RegisteredExperiment {
+            id: "simreal_gold_daily_abs_return_k3",
+            description: "GOLD daily — Sim-to-real: AbsReturn / K=3 / HardSwitch, stationary-π",
+            build: simreal_gold_daily_abs_return_k3,
+        },
+        RegisteredExperiment {
             id: "posterior_transition_tv",
             description: "PosteriorTransitionTV — 2-regime synthetic, LogReturn/ZScore, TotalVariation score",
             build: posterior_transition_tv,
@@ -519,6 +534,131 @@ pub fn simreal_spy_daily_hard_switch() -> ExperimentConfig {
             record_git_info: false,
         },
     }
+}
+
+// ---------------------------------------------------------------------------
+// Sim-to-real recovery family (Options 1 + 2 + 5 — see
+// `notes/sim_to_real_recovery_plan.md`).  These use the joint-optimum
+// configuration from the §18 grid search (AbsReturn / K=3 / HardSwitch
+// 0.55-2-5) together with the new stationary-π policy in Quick-EM to
+// avoid the degenerate-π pathology documented for
+// `simreal_spy_daily_hard_switch`.
+// ---------------------------------------------------------------------------
+
+/// Shared builder for sim-to-real experiments using the joint-optimum
+/// AbsReturn / K=3 / HardSwitch configuration with stationary-π Quick-EM
+/// calibration.
+fn simreal_abs_return_k3_template(
+    run_label: &str,
+    asset: &str,
+    frequency: RealFrequency,
+    real_dataset_id: &str,
+    proxy_events_path: &str,
+) -> ExperimentConfig {
+    use crate::calibration::{CalibrationMappingConfig, CalibrationStrategy, PiPolicy};
+
+    ExperimentConfig {
+        meta: RunMetaConfig {
+            run_label: run_label.to_string(),
+            notes: Some(format!(
+                "Sim-to-real | {asset} {frequency:?} | AbsReturn / K=3 / HardSwitch joint-optimum | \
+                 Quick-EM with stationary-π policy | synthetic-trained EM | real-tested"
+            )),
+        },
+        mode: ExperimentMode::SimToReal,
+        data: DataConfig::CalibratedSynthetic {
+            real_asset: asset.to_string(),
+            real_frequency: frequency,
+            real_dataset_id: real_dataset_id.to_string(),
+            real_date_start: Some("2018-01-01".to_string()),
+            real_date_end: None,
+            horizon: 2000,
+            mapping: CalibrationMappingConfig {
+                k: 3,
+                horizon: 2000,
+                strategy: CalibrationStrategy::QuickEm { max_iter: 100, tol: 1e-6 },
+                pi_policy: PiPolicy::Stationary,
+                ..CalibrationMappingConfig::default()
+            },
+            dataset_id: Some(format!("{run_label}")),
+        },
+        features: FeatureConfig {
+            family: FeatureFamilyConfig::AbsReturn,
+            scaling: ScalingPolicyConfig::ZScore,
+            session_aware: false,
+        },
+        model: ModelConfig {
+            k_regimes: 3,
+            training: TrainingMode::FitOffline,
+            em_max_iter: 300,
+            em_tol: 1e-7,
+            em_n_starts: 1,
+        },
+        detector: DetectorConfig {
+            detector_type: DetectorType::HardSwitch,
+            threshold: 0.55,
+            persistence_required: 2,
+            cooldown: 5,
+            ema_alpha: None,
+        },
+        evaluation: EvaluationConfig::Real {
+            proxy_events_path: proxy_events_path.to_string(),
+            route_a_point_pre_bars: 5,
+            route_a_point_post_bars: 10,
+            route_a_causal_only: false,
+            route_b_min_segment_len: 10,
+        },
+        output: OutputConfig {
+            root_dir: "./runs".to_string(),
+            write_json: true,
+            write_csv: true,
+            save_traces: true,
+        },
+        reproducibility: ReproducibilityConfig {
+            seed: Some(42),
+            deterministic_run_id: true,
+            save_config_snapshot: true,
+            record_git_info: false,
+        },
+    }
+}
+
+/// **Sim-to-real recovery (Option 2):** SPY daily AbsReturn / K=3.
+///
+/// AbsReturn $|r_t|$ has $\hat\rho_1 \approx +0.37$ on SPY daily — well
+/// inside the expressive range of a Gaussian MSM.  Combined with the
+/// stationary-π policy this is expected to close the sim-to-real gap
+/// observed for the LogReturn / K=2 entry.
+pub fn simreal_spy_daily_abs_return_k3() -> ExperimentConfig {
+    simreal_abs_return_k3_template(
+        "simreal_spy_daily_abs_return_k3",
+        "SPY",
+        RealFrequency::Daily,
+        "spy_daily",
+        "data/proxy_events/spy.json",
+    )
+}
+
+/// **Sim-to-real recovery:** WTI daily AbsReturn / K=3.
+pub fn simreal_wti_daily_abs_return_k3() -> ExperimentConfig {
+    simreal_abs_return_k3_template(
+        "simreal_wti_daily_abs_return_k3",
+        "WTI",
+        RealFrequency::Daily,
+        "wti_daily",
+        "data/proxy_events/wti.json",
+    )
+}
+
+/// **Sim-to-real recovery:** GOLD daily AbsReturn / K=3.
+pub fn simreal_gold_daily_abs_return_k3() -> ExperimentConfig {
+    simreal_abs_return_k3_template(
+        "simreal_gold_daily_abs_return_k3",
+        "GOLD",
+        RealFrequency::Daily,
+        "gold_daily",
+        "data/proxy_events/gold.json",
+    )
 }
 
 // ---------------------------------------------------------------------------

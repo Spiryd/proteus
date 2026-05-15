@@ -324,12 +324,22 @@ In addition to the standard real-mode artifacts, a SimToReal run writes:
 
 ### Registry entries
 
-The canonical SimToReal experiment is `simreal_spy_daily_hard_switch`
-(SPY daily, Quick-EM calibration over 2000 synthetic bars, HardSwitch
-detector).  Launch with:
+Four sim-to-real experiments are registered:
+
+| id | feature | $K$ | role |
+|---|---|---|---|
+| `simreal_spy_daily_hard_switch` | LogReturn | 2 | **counterexample** (Quick-EM π degenerate on negative-acf1 raw log-returns; documented in `docs/thesis/chapter5_observations_and_synthetic_calibration.md` §5.8.3) |
+| `simreal_spy_daily_abs_return_k3` | AbsReturn | 3 | joint-optimum (§18 grid search), partial recovery on SPY |
+| `simreal_wti_daily_abs_return_k3` | AbsReturn | 3 | joint-optimum, Route-B coherence > real-trained |
+| `simreal_gold_daily_abs_return_k3` | AbsReturn | 3 | **canonical working example** — sim-trained `event_coverage = 0.875` on real GOLD daily |
+
+All four use Quick-EM calibration over 2000 synthetic bars with
+`PiPolicy::Stationary` (see `docs/synthetic_to_real_calibration.md` §15)
+and the HardSwitch detector at the §18 joint-optimum parameters
+`(0.55, 2, 5)`.  Launch any of them with:
 
 ```
-cargo run -- run-real --id simreal_spy_daily_hard_switch
+cargo run -- run-real --id simreal_gold_daily_abs_return_k3
 ```
 
 ### Train-on-real comparator
@@ -343,10 +353,15 @@ side-by-side — the artifact that quantifies the sim-to-real generalisation
 gap for thesis figures.
 
 ```
-cargo run -- compare-sim-vs-real --id simreal_spy_daily_hard_switch \
+cargo run -- compare-sim-vs-real --id simreal_gold_daily_abs_return_k3 \
     --cache data/commodities.duckdb \
-    --save ./runs/comparison/simreal_spy_daily
+    --save ./runs/comparison/simreal_gold_daily
 ```
+
+The full sim-to-real generalisation sweep produced for the recovery work
+is collected in `verification/sim_to_real_recovery_2026_05_15/`
+(per-id `sim_vs_real_comparison.{json,md}` plus the aggregate
+`sweep_summary.md`).
 
 ---
 

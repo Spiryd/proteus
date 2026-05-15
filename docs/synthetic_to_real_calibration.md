@@ -311,6 +311,41 @@ The guard composes with the post-mapping flat-spread safety net so a
 near-degenerate empirical distribution still yields a well-separated
 synthetic generator.
 
+### 15.1 π-policy for Quick-EM (`PiPolicy`)
+
+`CalibrationMappingConfig::pi_policy` selects how the initial distribution
+`π` of the calibrated generator is chosen after Quick-EM converges:
+
+- **`PiPolicy::Fitted`** — keep the EM-fitted `π̂` as the maximum-likelihood
+  starting state of the training partition.
+- **`PiPolicy::Stationary`** (default) — replace `π̂` with the stationary
+  distribution `π★ = π★ · P̂` of the fitted transition matrix via
+  power iteration (`mapping::stationary_pi`).  The swap is recorded in
+  `mapping_notes` with the pre- and post-replacement vectors.
+
+`Stationary` is the principled choice when no prior information about the
+test-stream starting regime is available, and it avoids the
+degenerate-`π` collapse (`π̂ ≈ (1, 0)`) that Quick-EM produces on real
+series whose lag-1 autocorrelation is structurally outside the model class
+(e.g. raw daily log-returns on equity indices, where
+`ρ̂₁(y) ≈ -0.15`).  Switching to a feature whose autocorrelation is
+inside the model class (e.g. AbsReturn with `ρ̂₁ ≈ +0.37`) together with
+`PiPolicy::Stationary` is what unlocks the canonical sim-to-real entries;
+see Chapter 5 §5.8.4–5.8.5 of the thesis and
+`verification/sim_to_real_recovery_2026_05_15/sweep_summary.md`.
+
+### 15.2 Non-finite-observation guard
+
+Quick-EM and `summarize_observation_values` both filter non-finite values
+from the input before sorting / EM.  This is required because:
+
+- modern Rust slice-sort validates total order and panics on NaN;
+- some real series (notably WTI 2020-04-20 with its negative spot print)
+  produce NaN under `LogReturn` / `AbsReturn`.
+
+The drop count is recorded as a `mapping_notes` entry on the Quick-EM
+path; `summarize_observation_values` silently filters.
+
 ## 16. Policy-aware verifier mask (C′4)
 
 `VerificationTargetMask` (one bool per checked field) drives both the global

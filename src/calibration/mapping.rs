@@ -41,6 +41,26 @@ pub enum CalibrationStrategy {
     },
 }
 
+/// How the initial distribution `π` of the calibrated generator is chosen.
+///
+/// * [`Fitted`] — keep the EM-fitted `π̂` exactly.  Maximises training-data
+///   likelihood but can collapse to a degenerate point mass (e.g. `(1, 0)`)
+///   when the real data has structure outside the model class (e.g. negative
+///   lag-1 autocorrelation in raw log-returns).  In that case the detector,
+///   which is filter-initialised from `π`, starts the test stream stuck in
+///   one regime and never fires.
+/// * [`Stationary`] — replace `π̂` with the stationary distribution
+///   `π★ = π★ P` of the fitted transition matrix.  This is the principled
+///   choice when no prior information about the test-stream starting regime
+///   is available, and avoids the degenerate-`π` pathology on assets whose
+///   observed series is not stationary in the model's expressive range.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub enum PiPolicy {
+    Fitted,
+    #[default]
+    Stationary,
+}
+
 /// How regime variances are anchored to empirical summaries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum VariancePolicy {
@@ -97,6 +117,14 @@ pub struct CalibrationMappingConfig {
     #[serde(default)]
     pub strategy: CalibrationStrategy,
 
+    /// How `π` is chosen after Quick-EM converges.  Defaults to
+    /// [`PiPolicy::Stationary`] to avoid degenerate-`π` collapse on
+    /// real assets whose log-return series is not stationary in the
+    /// model's expressive range; set to [`PiPolicy::Fitted`] to retain
+    /// the legacy behaviour of using the EM-fitted `π̂` unchanged.
+    #[serde(default)]
+    pub pi_policy: PiPolicy,
+
     /// C′2 — minimum ratio `sigma_high / sigma_low` enforced under
     /// `VariancePolicy::QuantileAnchored` (and `MagnitudeConditioned`).
     /// When the empirically derived ratio is below this floor, the high
@@ -122,6 +150,7 @@ impl Default for CalibrationMappingConfig {
             symmetric_offdiag: true,
             jump: None,
             strategy: CalibrationStrategy::Summary,
+            pi_policy: PiPolicy::default(),
             min_high_low_ratio: default_min_high_low_ratio(),
         }
     }
@@ -513,8 +542,11 @@ fn quantile_init_params(obs: &[f64], k: usize) -> anyhow::Result<ModelParams> {
     if obs.is_empty() || k < 2 {
         anyhow::bail!("quantile_init_params: need at least 1 observation and k >= 2");
     }
-    let mut sorted = obs.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mut sorted: Vec<f64> = obs.iter().copied().filter(|x| x.is_finite()).collect();
+    if sorted.is_empty() {
+        anyhow::bail!("quantile_init_params: all observations are non-finite");
+    }
+    sorted.sort_by(f64::total_cmp);
     let n = sorted.len();
     let chunk = (n / k).max(1);
     let mut means = Vec::with_capacity(k);
@@ -566,13 +598,32 @@ fn calibrate_via_quick_em(
         );
     }
 
-    let init = quantile_init_params(&profile.observations, config.k)?;
+    // Drop non-finite values defensively (e.g. NaN from log(p_t/p_{t-1})
+    // when p_t ≤ 0, as happens on WTI 2020-04-20).  Tracked via a note.
+    let n_total = profile.observations.len();
+    let obs_clean: Vec<f64> = profile
+        .observations
+        .iter()
+        .copied()
+        .filter(|x| x.is_finite())
+        .collect();
+    let n_dropped = n_total - obs_clean.len();
+    if n_dropped > 0 {
+        notes.push(format!(
+            "Quick-EM: dropped {n_dropped} non-finite observation(s) of {n_total} before EM"
+        ));
+    }
+    if obs_clean.is_empty() {
+        anyhow::bail!("Quick-EM: all observations were non-finite after filtering");
+    }
+
+    let init = quantile_init_params(&obs_clean, config.k)?;
     let em_cfg = crate::model::em::EmConfig {
         tol,
         max_iter,
         ..Default::default()
     };
-    let em_result = crate::model::em::fit_em(&profile.observations, init, &em_cfg)?;
+    let em_result = crate::model::em::fit_em(&obs_clean, init, &em_cfg)?;
     notes.push(format!(
         "EM converged={} after {} iters; ll={:.4}",
         em_result.converged, em_result.n_iter, em_result.log_likelihood
@@ -592,7 +643,7 @@ fn calibrate_via_quick_em(
     };
     let means: Vec<f64> = order.iter().map(|&i| fitted.means[i]).collect();
     let variances: Vec<f64> = order.iter().map(|&i| fitted.variances[i]).collect();
-    let pi: Vec<f64> = order.iter().map(|&i| fitted.pi[i]).collect();
+    let pi_fitted: Vec<f64> = order.iter().map(|&i| fitted.pi[i]).collect();
     let k = fitted.k;
     let transition_rows: Vec<Vec<f64>> = (0..k)
         .map(|new_i| {
@@ -602,6 +653,29 @@ fn calibrate_via_quick_em(
                 .collect()
         })
         .collect();
+
+    // π-policy: by default, replace the EM-fitted π̂ with the stationary
+    // distribution of the fitted transition matrix.  This avoids the
+    // degenerate `π = (1, 0)` pathology when the real series has structure
+    // outside the model's expressive range (e.g. negative lag-1
+    // autocorrelation on z-scored daily log-returns).  See
+    // notes/sim_to_real_recovery_plan.md Option 1 for the diagnostic.
+    let pi = match config.pi_policy {
+        PiPolicy::Fitted => {
+            notes.push("Quick-EM: pi=fitted (EM-estimated initial distribution)".to_string());
+            pi_fitted
+        }
+        PiPolicy::Stationary => {
+            let pi_star = stationary_pi(&transition_rows);
+            notes.push(format!(
+                "Quick-EM: pi replaced with stationary distribution of P (was {:?}, now {:?})",
+                pi_fitted.iter().map(|v| (v * 1e6).round() / 1e6).collect::<Vec<_>>(),
+                pi_star.iter().map(|v| (v * 1e6).round() / 1e6).collect::<Vec<_>>(),
+            ));
+            pi_star
+        }
+    };
+
     let model_params = ModelParams::new(pi, transition_rows.clone(), means, variances);
     model_params.validate()?;
 
@@ -780,6 +854,108 @@ mod tests {
         );
         // Expected durations should be > 1 (high persistence).
         assert!(out.expected_durations.iter().all(|d| *d > 1.5));
+    }
+
+    /// `PiPolicy::Stationary` (the default for Quick-EM) must produce a π
+    /// equal to the stationary distribution of the fitted transition
+    /// matrix, even when EM would otherwise return a degenerate `\hat\pi`.
+    /// Verifies the Option 1 / sim-to-real-recovery fix.
+    #[test]
+    fn quick_em_pi_policy_stationary_replaces_degenerate_pi() {
+        // Construct an observation sequence that drives Quick-EM toward a
+        // strongly asymmetric initial state by starting with one long
+        // high-variance run followed by a long low-variance tail.
+        let mut obs = Vec::new();
+        let mut state: u64 = 0x5EED_FACE;
+        let mut next_u01 = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 33) as f64) / ((1u64 << 31) as f64)
+        };
+        let mut next_normal = || {
+            let u1 = next_u01().max(1e-12);
+            let u2 = next_u01();
+            (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+        };
+        for _ in 0..400 {
+            obs.push(2.0 * next_normal()); // high-var lead
+        }
+        for _ in 0..1600 {
+            obs.push(0.3 * next_normal()); // long calm tail
+        }
+        let mut prof = profile();
+        prof.observations = obs;
+
+        // Default cfg uses pi_policy = Stationary.
+        let cfg = CalibrationMappingConfig {
+            strategy: CalibrationStrategy::QuickEm {
+                max_iter: 100,
+                tol: 1e-6,
+            },
+            ..CalibrationMappingConfig::default()
+        };
+        assert_eq!(cfg.pi_policy, PiPolicy::Stationary);
+        let out = calibrate_to_synthetic(&prof, &cfg).unwrap();
+
+        // The returned π must equal the analytic stationary distribution of
+        // the model's transition matrix.
+        let p_rows: Vec<Vec<f64>> = (0..out.model_params.k)
+            .map(|i| out.model_params.transition_row(i).to_vec())
+            .collect();
+        let pi_star = stationary_pi(&p_rows);
+        for (a, b) in out.model_params.pi.iter().zip(pi_star.iter()) {
+            assert!(
+                (a - b).abs() < 1e-9,
+                "π differs from stationary distribution: π={:?}, π*={:?}",
+                out.model_params.pi,
+                pi_star
+            );
+        }
+        // π must be non-degenerate — both entries should have meaningful mass.
+        assert!(out.model_params.pi.iter().all(|p| *p > 1e-3));
+        // Note trail must mention the stationary replacement.
+        assert!(
+            out.mapping_notes
+                .iter()
+                .any(|n| n.contains("stationary distribution")),
+            "mapping notes missing stationary annotation: {:?}",
+            out.mapping_notes
+        );
+
+        // PiPolicy::Fitted must preserve the EM-fitted π verbatim.
+        let cfg_fitted = CalibrationMappingConfig {
+            strategy: CalibrationStrategy::QuickEm {
+                max_iter: 100,
+                tol: 1e-6,
+            },
+            pi_policy: PiPolicy::Fitted,
+            ..CalibrationMappingConfig::default()
+        };
+        let out_fitted = calibrate_to_synthetic(&prof, &cfg_fitted).unwrap();
+        // Either entry may dominate, but the two policies must differ on
+        // this construction (the EM-fit π is asymmetric while the
+        // stationary π comes from a much more balanced P).
+        let pi_diff: f64 = out
+            .model_params
+            .pi
+            .iter()
+            .zip(out_fitted.model_params.pi.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(
+            pi_diff > 1e-3,
+            "expected PiPolicy::Fitted and ::Stationary to produce different π, \
+             got fitted={:?} stationary={:?}",
+            out_fitted.model_params.pi,
+            out.model_params.pi
+        );
+        assert!(
+            out_fitted
+                .mapping_notes
+                .iter()
+                .any(|n| n.contains("pi=fitted"))
+        );
     }
 
     fn profile_with_obs(obs: Vec<f64>) -> EmpiricalCalibrationProfile {
