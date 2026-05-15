@@ -161,8 +161,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_reporter_creation() {
-        let reporter =
-            AggregateReporter::new(vec![make_layout("run_001"), make_layout("run_002")]);
+        let reporter = AggregateReporter::new(vec![make_layout("run_001"), make_layout("run_002")]);
         assert_eq!(reporter.runs.len(), 2);
     }
 }

@@ -1,4 +1,4 @@
-﻿/// Model-ready observation stream: the final output of the feature pipeline.
+/// Model-ready observation stream: the final output of the feature pipeline.
 ///
 /// # Pipeline summary
 ///
@@ -509,7 +509,7 @@ mod tests {
         };
         let stream = FeatureStream::build(&[], meta, config);
         assert!(stream.observations.is_empty());
-            }
+    }
 
     #[test]
     fn single_price_produces_empty_log_return_stream() {
@@ -525,4 +525,3 @@ mod tests {
         assert!(stream.observations.is_empty());
     }
 }
-

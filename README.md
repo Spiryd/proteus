@@ -124,17 +124,16 @@ The command re-runs the full pipeline (including EM fitting) and writes a fresh 
 
 #### `run-batch`
 
-> **WARNING:** `run-batch` uses `DryRunBackend` — no real data is loaded. All
-> metrics (alarms, coverage, precision) are synthetic mock values. For real-data
-> experiments use `run-real --id <id>` instead.
-
-Runs a list of JSON experiment configs in sequence:
+Runs a list of JSON experiment configs in sequence. Each config is dispatched
+through the backend matching its `mode` field (`Synthetic` → `SyntheticBackend`,
+`Real` → `RealBackend`, `SimToReal` → `SimToRealBackend`), so reported metrics
+are real for every mode:
 
 ```
 cargo run -- run-batch --config a.json --config b.json --save ./batch_out
 ```
 
-Writes `batch_summary.json` with per-run status and mock metrics.
+Writes `batch_summary.json` with per-run status and metrics.
 
 #### `calibrate`
 

@@ -2,6 +2,7 @@ use super::config::ExperimentConfig;
 use super::result::ExperimentResult;
 use super::runner::{ExperimentBackend, ExperimentRunner};
 
+#[allow(dead_code)] // kept as a public helper; CLI dispatches per-config in `direct_run_batch`.
 #[derive(Debug, Clone)]
 pub struct BatchConfig {
     pub runs: Vec<ExperimentConfig>,
@@ -15,6 +16,7 @@ pub struct BatchResult {
     pub n_failed: usize,
 }
 
+#[allow(dead_code)] // kept as a public helper; CLI dispatches per-config in `direct_run_batch`.
 pub fn run_batch<B: ExperimentBackend>(
     runner: &ExperimentRunner<B>,
     cfg: BatchConfig,

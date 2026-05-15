@@ -29,8 +29,9 @@ pub enum MeanPolicy {
 ///   The synthetic stream then is, by construction, a sample from the model
 ///   most likely to have produced the real training partition.  This is the
 ///   path used by the sim-to-real experiment family.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub enum CalibrationStrategy {
+    #[default]
     Summary,
     QuickEm {
         /// EM iteration budget (small — we are calibrating, not fitting).
@@ -38,12 +39,6 @@ pub enum CalibrationStrategy {
         /// Convergence tolerance.
         tol: f64,
     },
-}
-
-impl Default for CalibrationStrategy {
-    fn default() -> Self {
-        Self::Summary
-    }
 }
 
 /// How regime variances are anchored to empirical summaries.

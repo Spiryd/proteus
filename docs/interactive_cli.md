@@ -230,11 +230,9 @@ Artifacts written to `--save`:
 
 ### `run-batch`
 
-> **WARNING:** `run-batch` uses `DryRunBackend` — no real data is loaded. All
-> metrics (alarms, coverage, precision) are synthetic mock values. For real-data
-> experiments, use `run-real --id <id>` instead.
-
-Runs a list of JSON experiment configs in sequence:
+Runs a list of JSON experiment configs in sequence. Each config is dispatched
+through the backend matching its `mode` field (`Synthetic` → `SyntheticBackend`,
+`Real` → `RealBackend`, `SimToReal` → `SimToRealBackend`):
 
 ```
 cargo run -- run-batch --config a.json --config b.json --save ./batch_out

@@ -110,12 +110,8 @@ pub fn run_calibration_workflow(
 
     let synthetic_summary = summarize_observation_values(&sim.observations);
     let mask = VerificationTargetMask::for_policy(&mapping_config);
-    let verification = verify_calibration_masked(
-        &empirical_profile.summary,
-        &synthetic_summary,
-        &tol,
-        &mask,
-    );
+    let verification =
+        verify_calibration_masked(&empirical_profile.summary, &synthetic_summary, &tol, &mask);
     let scale_check = scale_consistency_check(
         &empirical_profile.summary,
         &synthetic_summary,
@@ -213,7 +209,10 @@ mod tests {
         .unwrap();
         let v = report.view();
         assert_eq!(v.frequency, "daily");
-        assert!(!v.mapping_notes.is_empty(), "mapping_notes should be populated");
+        assert!(
+            !v.mapping_notes.is_empty(),
+            "mapping_notes should be populated"
+        );
         // JSON round-trip preserves new fields.
         let json = serde_json::to_string(&v).unwrap();
         assert!(json.contains("mapping_notes"));

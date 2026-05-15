@@ -534,12 +534,16 @@ mod tests {
         let obs = sim_obs(params.clone(), 80, SEED);
 
         let mut state_a = OnlineFilterState::new(&params);
-        let results_a: Vec<OnlineStepResult> =
-            obs.iter().map(|&y| state_a.step(y, &params).unwrap()).collect();
+        let results_a: Vec<OnlineStepResult> = obs
+            .iter()
+            .map(|&y| state_a.step(y, &params).unwrap())
+            .collect();
 
         let mut state_b = OnlineFilterState::new(&params);
-        let results_b: Vec<OnlineStepResult> =
-            obs.iter().map(|&y| state_b.step(y, &params).unwrap()).collect();
+        let results_b: Vec<OnlineStepResult> = obs
+            .iter()
+            .map(|&y| state_b.step(y, &params).unwrap())
+            .collect();
 
         assert_eq!(results_a.len(), results_b.len());
         for (s, (a, b)) in results_a.iter().zip(results_b.iter()).enumerate() {
@@ -634,10 +638,14 @@ mod tests {
         let mut state_a = OnlineFilterState::new(&params);
         let mut state_b = OnlineFilterState::new(&params);
 
-        let results_a: Vec<OnlineStepResult> =
-            obs.iter().map(|&y| state_a.step(y, &params).unwrap()).collect();
-        let results_b: Vec<OnlineStepResult> =
-            obs.iter().map(|&y| state_b.step(y, &params).unwrap()).collect();
+        let results_a: Vec<OnlineStepResult> = obs
+            .iter()
+            .map(|&y| state_a.step(y, &params).unwrap())
+            .collect();
+        let results_b: Vec<OnlineStepResult> = obs
+            .iter()
+            .map(|&y| state_b.step(y, &params).unwrap())
+            .collect();
 
         for (s, (a, b)) in results_a.iter().zip(results_b.iter()).enumerate() {
             for j in 0..params.k {

@@ -7,7 +7,7 @@ use inquire::{Confirm, InquireError, Select, Text};
 use crate::alphavantage::commodity::{CommodityEndpoint, Interval};
 use crate::config::Config;
 use crate::data_service::DataService;
-use crate::experiments::batch::{BatchConfig, run_batch};
+use crate::experiments::batch::BatchResult;
 use crate::experiments::config::{DataConfig, EvaluationConfig, ExperimentConfig, TrainingMode};
 use crate::experiments::real_backend::RealBackend;
 use crate::experiments::registry;
@@ -1181,19 +1181,18 @@ fn direct_run_experiment(args: &[String]) -> anyhow::Result<()> {
 }
 
 fn direct_run_batch(args: &[String]) -> anyhow::Result<()> {
+    use crate::experiments::config::ExperimentMode;
+
     let config_paths = collect_flag_values(args, "--config");
     if config_paths.is_empty() {
-        anyhow::bail!("Usage: run-batch --config a.json --config b.json ...");
+        anyhow::bail!(
+            "Usage: run-batch --config a.json --config b.json ... [--cache <path>] [--stop-on-error]"
+        );
     }
 
-    // Prominently warn the user that run-batch uses DryRunBackend and produces
-    // mock metrics.  Real data is never loaded; results are not scientifically
-    // meaningful.  Users who want real-data results should use `run-real`.
-    eprintln!();
-    eprintln!("  WARNING: run-batch uses DryRunBackend — no real data is loaded.");
-    eprintln!("  All metrics (alarms, coverage, precision) are synthetic mock values.");
-    eprintln!("  For real-data experiments use:  run-real --id <experiment_id>");
-    eprintln!();
+    let cache =
+        flag_value(args, "--cache").unwrap_or_else(|| "data/commodities.duckdb".to_string());
+
     let mut configs = Vec::new();
     for path in &config_paths {
         let cfg = load_experiment_config(path)?;
@@ -1201,13 +1200,50 @@ fn direct_run_batch(args: &[String]) -> anyhow::Result<()> {
         configs.push(cfg);
     }
     let stop_on_error = args.contains(&"--stop-on-error".to_string());
-    let runner = ExperimentRunner::new(DryRunBackend);
-    let batch_cfg = BatchConfig {
-        runs: configs,
-        stop_on_error,
+
+    // Dispatch per-config by mode so real and sim-to-real configs load real
+    // data via the proper backends instead of returning mock metrics.
+    println!("Running batch of {} experiments...", configs.len());
+    let mut results: Vec<ExperimentResult> = Vec::with_capacity(configs.len());
+    let mut n_success = 0usize;
+    let mut n_failed = 0usize;
+    for cfg in configs {
+        let r = match cfg.mode {
+            ExperimentMode::Synthetic => {
+                let runner = ExperimentRunner::new(
+                    crate::experiments::synthetic_backend::SyntheticBackend::new(),
+                );
+                runner.run(cfg)
+            }
+            ExperimentMode::Real => {
+                let runner = ExperimentRunner::new(
+                    crate::experiments::real_backend::RealBackend::new(&cache),
+                );
+                runner.run(cfg)
+            }
+            ExperimentMode::SimToReal => {
+                let runner = ExperimentRunner::new(
+                    crate::experiments::sim_to_real_backend::SimToRealBackend::new(&cache),
+                );
+                runner.run(cfg)
+            }
+        };
+        if r.is_success() {
+            n_success += 1;
+        } else {
+            n_failed += 1;
+            if stop_on_error {
+                results.push(r);
+                break;
+            }
+        }
+        results.push(r);
+    }
+    let batch = BatchResult {
+        run_results: results,
+        n_success,
+        n_failed,
     };
-    println!("Running batch of {} experiments...", batch_cfg.runs.len());
-    let batch = run_batch(&runner, batch_cfg);
     println!("Completed: {}  Failed: {}", batch.n_success, batch.n_failed);
     let results_only: Vec<&ExperimentResult> = batch.run_results.iter().collect();
     let table_md = build_metrics_table(&results_only);
@@ -1883,11 +1919,17 @@ fn direct_calibrate(args: &[String]) -> anyhow::Result<()> {
         "experiment_id": id,
         "asset": view.asset,
         "feature_label": view.feature_label,
+        "frequency": view.frequency,
         "horizon": view.horizon,
         "empirical_n": view.empirical_n,
         "synthetic_n": view.synthetic_n,
         "verification_passed": view.verification_passed,
         "verification_notes": view.verification_notes,
+        "verification_mask": view.verification_mask,
+        "field_results": view.field_results,
+        "mapping_notes": view.mapping_notes,
+        "scale_check": view.scale_check,
+        "rng_seed": view.rng_seed,
         "expected_durations": view.expected_durations,
         "empirical": {
             "mean": s.mean, "variance": s.variance, "std_dev": s.std_dev,
@@ -2075,23 +2117,52 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
     println!("  Phase 1/2 — grid search (all artifact writes disabled for speed)...");
     println!();
 
-    let backend = crate::experiments::real_backend::RealBackend::new(&cache);
-    let runner = crate::experiments::runner::ExperimentRunner::new(backend);
-
-    let opt = if let Some(mg) = &model_grid {
-        optimize_full(&runner, &base_cfg, mg, &grid, |idx, total| {
-            if idx % 4 == 0 || idx == total - 1 {
-                print!("\r  [{:>4}/{total}] searching...", idx + 1);
-                let _ = std::io::stdout().flush();
+    // Dispatch the search backend by experiment mode so synthetic experiments
+    // are evaluated against synthetic data and real experiments against real
+    // data (rather than RealBackend rejecting synthetic configs).
+    let progress_full = |idx: usize, total: usize| {
+        if idx.is_multiple_of(4) || idx == total - 1 {
+            print!("\r  [{:>4}/{total}] searching...", idx + 1);
+            let _ = std::io::stdout().flush();
+        }
+    };
+    let progress_det = |idx: usize, total: usize| {
+        if idx.is_multiple_of(4) || idx == total - 1 {
+            print!("\r  [{:>3}/{total}] searching...", idx + 1);
+            let _ = std::io::stdout().flush();
+        }
+    };
+    let opt = match base_cfg.mode {
+        crate::experiments::config::ExperimentMode::Synthetic => {
+            let runner = crate::experiments::runner::ExperimentRunner::new(
+                crate::experiments::synthetic_backend::SyntheticBackend::new(),
+            );
+            if let Some(mg) = &model_grid {
+                optimize_full(&runner, &base_cfg, mg, &grid, progress_full)
+            } else {
+                optimize(&runner, &base_cfg, &grid, progress_det)
             }
-        })
-    } else {
-        optimize(&runner, &base_cfg, &grid, |idx, total| {
-            if idx % 4 == 0 || idx == total - 1 {
-                print!("\r  [{:>3}/{total}] searching...", idx + 1);
-                let _ = std::io::stdout().flush();
+        }
+        crate::experiments::config::ExperimentMode::SimToReal => {
+            let runner = crate::experiments::runner::ExperimentRunner::new(
+                crate::experiments::sim_to_real_backend::SimToRealBackend::new(&cache),
+            );
+            if let Some(mg) = &model_grid {
+                optimize_full(&runner, &base_cfg, mg, &grid, progress_full)
+            } else {
+                optimize(&runner, &base_cfg, &grid, progress_det)
             }
-        })
+        }
+        crate::experiments::config::ExperimentMode::Real => {
+            let runner = crate::experiments::runner::ExperimentRunner::new(
+                crate::experiments::real_backend::RealBackend::new(&cache),
+            );
+            if let Some(mg) = &model_grid {
+                optimize_full(&runner, &base_cfg, mg, &grid, progress_full)
+            } else {
+                optimize(&runner, &base_cfg, &grid, progress_det)
+            }
+        }
     };
 
     println!("\r  [{n}/{n}] done.         ", n = opt.n_evaluated);
@@ -2170,9 +2241,22 @@ fn direct_optimize(args: &[String]) -> anyhow::Result<()> {
     best_cfg.output.save_traces = true;
     best_cfg.output.root_dir.clone_from(&save_dir);
 
-    let backend2 = crate::experiments::real_backend::RealBackend::new(&cache);
-    let runner2 = crate::experiments::runner::ExperimentRunner::new(backend2);
-    let result = runner2.run(best_cfg.clone());
+    // Dispatch the Phase-2 backend by mode (same as Phase 1) so synthetic
+    // configs are not rejected by RealBackend.
+    let result = match best_cfg.mode {
+        crate::experiments::config::ExperimentMode::Synthetic => {
+            let backend2 = crate::experiments::synthetic_backend::SyntheticBackend::new();
+            crate::experiments::runner::ExperimentRunner::new(backend2).run(best_cfg.clone())
+        }
+        crate::experiments::config::ExperimentMode::SimToReal => {
+            let backend2 = crate::experiments::sim_to_real_backend::SimToRealBackend::new(&cache);
+            crate::experiments::runner::ExperimentRunner::new(backend2).run(best_cfg.clone())
+        }
+        crate::experiments::config::ExperimentMode::Real => {
+            let backend2 = crate::experiments::real_backend::RealBackend::new(&cache);
+            crate::experiments::runner::ExperimentRunner::new(backend2).run(best_cfg.clone())
+        }
+    };
 
     println!("Pipeline:");
     print_stage_log(&best_cfg, &result);

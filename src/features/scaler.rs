@@ -178,7 +178,10 @@ mod tests {
     fn none_policy_is_identity() {
         let scaler = FittedScaler::fit(&[1.0, 2.0, 3.0], ScalingPolicy::None);
         assert_eq!(scaler.transform_value(5.0), 5.0);
-        assert_eq!(scaler.transform_value(-std::f64::consts::PI), -std::f64::consts::PI);
+        assert_eq!(
+            scaler.transform_value(-std::f64::consts::PI),
+            -std::f64::consts::PI
+        );
     }
 
     // ---- ZScore ----

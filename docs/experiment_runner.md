@@ -496,21 +496,21 @@ is not invoked during normal `e2e`, `run-real`, or `optimize` runs.
 
 ## 13. DryRunBackend Scope
 
-`DryRunBackend` is used by two subcommands:
+`DryRunBackend` is used by one subcommand:
 
 | Subcommand | Backend | Math stack exercised? |
 |---|---|---|
 | `run-experiment` | `DryRunBackend` | No — all metrics are mocks |
-| `run-batch` | `DryRunBackend` | No — all metrics are mocks |
+| `run-batch` | per-config dispatch (`Synthetic`/`Real`/`SimToReal`) | Yes |
 | `e2e` | `SyntheticBackend` | Yes |
 | `run-real` | `RealBackend` / `SimToRealBackend` | Yes |
 | `compare-sim-vs-real` | `SimToRealBackend` + `RealBackend` | Yes |
-| `optimize` | `RealBackend` | Yes |
+| `optimize` | per-config dispatch (`Synthetic`/`Real`/`SimToReal`) | Yes |
 
-`run-experiment` and `run-batch` are **pipeline validation** tools: they
-exercise the config, runner, and artifact-writing machinery without running
-EM, the filter, or the detector.
+`run-experiment` is a **pipeline validation** tool: it exercises the config,
+runner, and artifact-writing machinery without running EM, the filter, or
+the detector.
 
-**For thesis results:** only `e2e`, `run-real`, and `optimize` outputs are
-scientifically meaningful.  Both `run-experiment` subcommands print a
-WARNING message to `stderr` to make this clear.
+**For thesis results:** `e2e`, `run-real`, `run-batch`, `optimize`, and
+`compare-sim-vs-real` outputs are scientifically meaningful. `run-experiment`
+prints a WARNING message to `stderr` to make its mock-metric nature clear.

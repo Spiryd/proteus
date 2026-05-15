@@ -207,10 +207,10 @@ pub fn pairwise(
 
 #[cfg(test)]
 mod tests {
-    use super::super::smoother::smooth;
+    use super::super::ModelParams;
     use super::super::filter::filter;
     use super::super::simulate::simulate;
-    use super::super::ModelParams;
+    use super::super::smoother::smooth;
     use super::*;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;

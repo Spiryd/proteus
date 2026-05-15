@@ -27,9 +27,9 @@ mod tests {
     //! G - Short samples (T=10)
     //! H - Long samples (T=50_000, numerical stability)
 
+    use super::super::ModelParams;
     use super::super::filter::{FilterResult, filter};
     use super::super::simulate::simulate;
-    use super::super::ModelParams;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
 
