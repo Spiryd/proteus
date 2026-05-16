@@ -1,359 +1,119 @@
-# Chapter 5 — Observations: From Markets to Synthetic Streams
+# Chapter 5 — Synthetic-to-Real Calibration
 
-**Relation to previous chapters.** Chapter 2 fixed the Gaussian Markov-switching
-model (MSM), Chapter 3 estimated its parameters by EM, and Chapter 4 used the
-resulting filter posterior to build a real-time detector. All three chapters
-worked with an abstract observation sequence $y_{1:T}$. This chapter defines
-how that sequence is constructed, in the two settings the rest of the thesis
-uses:
+**Relation to previous chapters.** Chapters 3 and 4 developed the theory of
+the Gaussian Markov Switching Model and its online changepoint detector. Both
+chapters worked with an abstract observation sequence $y_{1:T}$ and assumed
+known model parameters $\theta$. This chapter addresses the central
+methodological question of the thesis: *how do we choose $\theta$ so that the
+synthetic data a detector trains on resembles the real market data it must
+detect on?*
 
-- the **empirical pipeline** that maps raw market prices to a model-ready
-  stream $y^{\text{real}}_{1:T}$ (§5.2–§5.5);
-- the **synthetic pipeline** that samples $(y^{\text{syn}}_{1:T},\, S_{1:T})$
-  from a calibrated MSM, providing the only setting in which changepoint
-  detection has access to ground truth (§5.6–§5.8).
-
-The two pipelines are not parallel decorations: they share the same
-observation contract (§5.1) and are bridged by a single calibration operator
-$\mathcal{K}$ (§5.7) that anchors the synthetic generator to empirical
-summaries computed on the *same* $y^{\text{real}}_{1:T}$ the detector
-consumes.
+The answer is the **calibration operator** $\mathcal{K}$, a deterministic map
+from empirical summary statistics of the real training stream to the
+parameters of a synthetic generator. The operator is the novel contribution
+of this thesis. Its definition (§5.1), two concrete implementations (§5.2,
+§5.4), the variance policies it supports (§5.3), the initial-distribution
+pathology it must handle (§5.5), and the verification protocol that audits its
+output (§5.6) form the six sections of this chapter.
 
 ---
 
-## 5.1 The observation contract
+## 5.1 The calibration problem
 
-Before specifying any pipeline, we state the properties any candidate stream
-$y_{1:T}$ must satisfy for the model and detector to be well-defined.
-
-**Definition 5.1 (Admissible observation stream).** A sequence
-$(t_k, y_k)_{k=1}^T \in (\mathcal{T} \times \mathbb{R})^T$ is *admissible* if
-
-1. **(C1) Strict order.** $t_1 < t_2 < \cdots < t_T$.
-2. **(C2) Causality.** Each $y_k$ is a measurable function of the price
-   filtration $\mathcal{F}_{t_k} = \sigma(P_{s} : s \le t_k)$.
-3. **(C3) Leakage safety.** Any preprocessing step whose parameters depend on
-   the data must be fitted on a *prefix* $y_{1:n_{\text{train}}}$ and applied
-   identically to $y_{n_{\text{train}}+1:T}$.
-4. **(C4) Stationarity-friendly representation.** $y_k$ is a transformation of
-   prices designed so that the within-regime law $y_k \mid S_k = j$ is
-   approximately stationary; in particular, raw prices are excluded.
-5. **(C5) Regime-conditional Gaussianity.** Conditional on the latent state
-   $S_k$, $y_k \sim \mathcal{N}(\mu_{S_k}, \sigma_{S_k}^2)$ holds with
-   tolerable misspecification.
-
-C1–C3 are *enforced* by the pipeline; C4 is *promoted* by the choice of
-feature; C5 is the model assumption from Chapter 2 that the pipeline is
-designed to keep credible.
-
-The remainder of this chapter is organised so that every section discharges
-one or more of these conditions. The synthetic pipeline (§5.6) is the unique
-setting in which C5 holds *by construction*; the empirical pipeline (§5.2–5.5)
-is the unique setting in which the data are financially real but C5 is an
-empirical hypothesis.
-
----
-
-## 5.2 Empirical pipeline: raw prices to a clean series
-
-Daily and intraday equity ETFs (SPY, QQQ) and twelve commodity series are
-served by a single REST vendor and persisted to a local cache; all
-experiments read exclusively from the cache, so training never issues a
-network call. The exact endpoint inventory and cache schema are recorded in
-[docs/alphavantage_client.md](../alphavantage_client.md) and
-[docs/duckdb_cache.md](../duckdb_cache.md); for the chapter what matters is
-that every experiment starts from a deterministic tabular series
-$(t_k, P_k)_{k=1}^N$.
-
-### 5.2.1 Two data modes
-
-The pipeline distinguishes daily and intraday data because they differ in two
-substantive ways:
-
-| Behaviour | Daily | Intraday (bar of $\Delta$ minutes) |
-|---|---|---|
-| Timestamp granularity | calendar date at 00:00 | bar-open in US Eastern Time |
-| Calendar gaps | expected (weekends, holidays) | flagged when $\Delta t > 3\,\Delta$ |
-| Session filter | not applied | $\mathrm{RTH}(t) \iff 09{:}30 \le \mathrm{time}(t) < 16{:}00$ ET |
-
-Mode selection is encoded once per registered experiment; daily and intraday
-streams cannot be silently mixed.
-
-### 5.2.2 Cleaning algorithm
-
-Given a vendor response $(t_k, P_k)_{k=1}^M$ in arbitrary order, the cleaning
-stage produces a `CleanSeries` by:
-
-**Algorithm 5.1 (Series cleaning).**
-
-1. Record `had_unsorted_input` $\mathrel{:=} \mathbb{1}[\exists k : t_{k+1} < t_k]$.
-2. Sort $(t_k, P_k)$ ascending by $t_k$ (stable).
-3. Deduplicate by $t_k$ with keep-first; record `n_dropped_duplicates`.
-4. If intraday: scan consecutive pairs and record every $k$ with
-   $t_{k+1} - t_k > 3\,\Delta$ as a gap; **do not interpolate**.
-
-The pipeline never silently drops valid data: duplicate removal is the only
-deletion, and gaps are reported rather than filled. The audit record
-`data_quality.json` carries `n_input`, `n_output`, `n_dropped_duplicates`,
-`had_unsorted_input` and the list of gaps; for the SPY-daily window used in
-the verification of this thesis, $n_{\text{input}} = 6662$ raw bars are
-delivered, no duplicates are removed and no gaps are reported.
-
-### 5.2.3 Session filter for intraday data
-
-When the experiment requests `session_aware = true`, the cleaning output is
-restricted to RTH bars before any further processing. This is a substantive
-empirical decision, not a convenience: pre-market and post-market bars have
-much thinner participation and different volatility regimes, and overnight
-returns (16:00 ET on day $d$ to 09:30 ET on day $d+1$) dominate the intraday
-variance. Including them produces a spurious changepoint at every session
-open. Empirically, the filter reduces a 24-hour 15-minute SPY history of
-about $378{,}000$ bars to roughly $25{,}000$ RTH bars, a factor matching the
-ratio $6.5 / 96$ of the trading day to the full bar-grid day.
-
----
-
-## 5.3 Chronological partition
-
-For each clean series of length $N$ the timeline is partitioned by two
-boundaries $\tau_1 < \tau_2$ into
+A purely hand-picked $\vartheta$ produces synthetic data that may have nothing
+to do with markets. The calibration operator addresses this by choosing
+$\vartheta$ from empirical summary functionals of the real training stream
+$y^{\text{real,train}}_{1:T}$:
 
 $$
-\mathcal{T}_{\text{train}} = \{t : t < \tau_1\},\quad
-\mathcal{T}_{\text{val}} = \{t : \tau_1 \le t < \tau_2\},\quad
-\mathcal{T}_{\text{test}} = \{t : t \ge \tau_2\}.
+\mathcal{K}:\; \big( T_1(y^{\text{real,train}}),\, \ldots,\, T_m(y^{\text{real,train}}) \big)
+\;\longmapsto\; \vartheta = (\pi,\, P,\, \mu_{1:K},\, \sigma^2_{1:K}).
 $$
 
-The default policy is a chronological 70/15/15 split: $\tau_1$ is the
-$\lfloor 0.70\, N\rfloor$-th timestamp and $\tau_2$ the
-$\lfloor 0.85\, N\rfloor$-th. **Random shuffling is forbidden by
-construction**, and the partition is performed *before* any feature is
-computed.
-
-For the SPY-daily window (2018-01-02 → present, $N = 2091$ after the time
-window is applied), the realised cut points are $\tau_1 =$ 2023-10-25 and
-$\tau_2 =$ 2025-01-28, yielding $n_{\text{train}} = 1463$ and
-$n_{\text{val}} = n_{\text{test}} = 314$ as recorded in
-`split_summary.json`.
-
-**Proposition 5.1 (Leakage contract).** *Any preprocessing step whose
-parameters depend on the data sees only $\mathcal{T}_{\text{train}}$.*
-
-This is discharged in two places: §5.5 enforces it for the scaler, and §5.7
-enforces it for the calibration operator. Together with C2 it implies
-condition C3 of Definition 5.1.
-
----
-
-## 5.4 Observation operators
-
-The model assumes $y_k \mid S_k = j \sim \mathcal{N}(\mu_j, \sigma_j^2)$ but
-says nothing about what $y_k$ is. The **observation design** decision selects
-a causal operator $\phi: P_{1:k} \mapsto y_k$. Five families are studied in
-this thesis. Letting $r_k = \log P_k - \log P_{k-1}$ denote the log-return:
-
-| Family | Symbol | Definition | Warmup |
-|---|---|---|---|
-| LogReturn | $\phi^{\text{LR}}$ | $r_k$ | $1$ |
-| AbsReturn | $\phi^{\text{AR}}$ | $\lvert r_k \rvert$ | $1$ |
-| SquaredReturn | $\phi^{\text{SR}}$ | $r_k^2$ | $1$ |
-| RollingVol$(w)$ | $\phi^{\text{RV},w}$ | $\sqrt{\tfrac{1}{w}\sum_{i=0}^{w-1}(r_{k-i}-\bar r_k^{(w)})^2}$ | $w$ |
-| StandardizedReturn$(w,\varepsilon)$ | $\phi^{\text{ZR},w,\varepsilon}$ | $r_k / (\phi^{\text{RV},w}_k + \varepsilon)$ | $w$ |
-
-Each operator depends only on prices at times $\le t_k$ (condition C2), and
-each is undefined at the first warmup bars where its inputs do not yet exist;
-those bars are dropped *with their timestamps preserved*, so the warmup count
-is exact and recorded in `feature_summary.json`.
-
-**Why not raw prices.** Raw prices fail C4: they are non-stationary, scale
-dependent (a 1 % move on SPY at \$200 and at \$600 has different magnitudes),
-drift, and exhibit level asymmetry. No registered feature family produces
-$P_k$ unchanged.
-
-**Session-aware variants.** For intraday data with `session_aware = true`,
-$\phi^{\text{LR}}$ is overridden by a partial operator $\phi^{\text{LR,SA}}$
-that is undefined whenever $t_{k-1}$ and $t_k$ fall in different RTH
-sessions; the rolling-window operators reset their state at each session
-boundary. The resulting stream contains no session-crossing returns.
-
-**Population versus sample variance.** $\phi^{\text{RV},w}$ uses the $1/w$
-divisor rather than $1/(w-1)$ because the window is treated as a
-finite-sample *volatility proxy*, not an unbiased variance estimator;
-this matches GARCH-style realised-volatility usage.
-
----
-
-## 5.5 Leakage-safe scaling
-
-A fitted scaler $\mathcal{S}: \mathbb{R} \to \mathbb{R}$ is applied to the
-feature stream after warmup trimming. The default policy is z-scoring with
-parameters $(\hat\mu, \hat\sigma)$ estimated *only* on the first
-$n_{\text{train}}$ post-warmup feature values:
-
-$$
-\hat\mu = \frac{1}{n_{\text{train}}} \sum_{k=1}^{n_{\text{train}}} \phi_k,\qquad
-\hat\sigma^2 = \frac{1}{n_{\text{train}}} \sum_{k=1}^{n_{\text{train}}} (\phi_k - \hat\mu)^2,
-$$
-
-$$
-\mathcal{S}(x) = \begin{cases}(x - \hat\mu)/\hat\sigma & \hat\sigma > 0,\\ x - \hat\mu & \hat\sigma = 0.\end{cases}
-$$
-
-The fitted $\mathcal{S}$ is then *frozen* and applied uniformly to the
-training, validation, test and online streams. The scaler has no
-`refit_on(\cdot)` operation: re-estimation on later partitions is
-structurally impossible, discharging Proposition 5.1 for the scaler.
-
-For the SPY-daily verification run, fitting on $n_{\text{train}} = 1462$
-post-warmup log-returns produced a scaler under which the *full* stream of
-2090 z-scored observations has mean $0.012$ and standard deviation
-$0.934$. The deviation from $1.0$ is the contribution of the
-validation+test partitions; the training partition is, by construction, at
-unit variance.
-
----
-
-## 5.6 The synthetic generator
-
-The empirical pipeline produces a financially real $y^{\text{real}}_{1:T}$
-but provides no ground-truth changepoints. The synthetic pipeline samples
-from the same MSM family as Chapter 2 with a *known* hidden path, providing
-the only setting in which event-matching metrics are computable without
-circularity.
-
-### 5.6.1 Sampling law
-
-Given a parameter vector $\vartheta = (\pi, P, \mu, \sigma^2)$ with $K \ge 2$
-regimes:
-
-$$
-S_1 \sim \pi,\qquad
-S_k \mid S_{k-1} = i \sim \mathrm{Cat}(P_{i,1}, \ldots, P_{i,K}),\qquad
-y_k \mid S_k = j \sim \mathcal{N}(\mu_j, \sigma_j^2).
-$$
-
-**Algorithm 5.2 (Forward sampling).** *Inputs:* parameters $\vartheta$,
-horizon $T$, RNG state $\omega$. *Outputs:* $(y_{1:T}, S_{1:T})$.
-
-1. Draw $S_1 \sim \mathrm{Cat}(\pi)$.
-2. For $k = 2, \ldots, T$: draw $S_k \sim \mathrm{Cat}(P_{S_{k-1}, \cdot})$.
-3. For $k = 1, \ldots, T$: draw $y_k \sim \mathcal{N}(\mu_{S_k}, \sigma_{S_k}^2)$.
-
-Before sampling, $\vartheta$ is validated against nine invariants ($K \ge 2$;
-$\pi$ and rows of $P$ non-negative and sum to one within $10^{-9}$; all
-$\sigma_j^2 > 0$; dimension consistency). All categorical draws use
-$\mathrm{rand\_distr::WeightedIndex}$, which is deterministic given the RNG
-state.
-
-### 5.6.2 Ground-truth changepoints
-
-The set of true changepoints is defined operationally:
-
-$$
-\mathcal{C}(S_{1:T}) = \{\,k \in \{2, \ldots, T\} \;:\; S_k \ne S_{k-1}\,\}.
-$$
-
-This is the *unique* source of truth used in the thesis. The benchmark
-matcher in Chapter 7 consumes $\mathcal{C}$ with the same 1-based indexing
-and the same boundary convention $1 < \tau \le T$, and is required to handle
-$\mathcal{C} = \emptyset$ explicitly (a stream that stays in one regime makes
-every alarm a false positive). Re-running the experiment with the same RNG
-seed reproduces $\mathcal{C}$ exactly, so the ground truth is not persisted
-to disk: it is *regenerated* from the seed at evaluation time, eliminating a
-class of drift bugs.
-
-### 5.6.3 The synthetic stream as an admissible observation
-
-A synthetic stream satisfies C1–C5 trivially: timestamps are integer indices
-(C1); $y_k$ is a function of $\omega$ only (C2); no preprocessing means no
-leakage (C3); the law is by construction normal within each regime (C4–C5).
-The remaining question is whether the synthetic distribution resembles the
-empirical one along the dimensions that matter for detector evaluation. That
-is the role of the calibration operator in §5.7.
-
----
-
-## 5.7 The calibration operator $\mathcal{K}$
-
-A purely hand-picked $\vartheta$ produces synthetic data that may have
-nothing to do with markets. The calibration operator chooses $\vartheta$ from
-empirical summary functionals of $y^{\text{real,train}}_{1:T}$:
-
-$$
-\mathcal{K}: \big( T_1(y^{\text{real,train}}),\, \ldots,\, T_m(y^{\text{real,train}}) \big) \;\longmapsto\; \vartheta.
-$$
-
-The objective is **statistical anchoring, not distributional cloning**: a
+The objective is **statistical anchoring, not distributional cloning**. A
 perfect distributional match would defeat the purpose of having an
-interpretable two-state model whose hidden states have unambiguous meaning.
+interpretable $K$-regime model whose hidden states have unambiguous financial
+meaning. The operator must therefore be expressive enough to reproduce the
+dominant empirical features that drive detector behaviour — marginal scale,
+tail asymmetry, regime persistence — while remaining deliberately silent on
+higher-order structure (e.g. long memory, heavy tails) that the Gaussian MSM
+cannot capture.
+
 Two requirements are non-negotiable:
 
-- **Feature consistency.** $T_i$ is evaluated on the same feature stream
+- **Feature consistency.** Each $T_i$ is evaluated on the same feature stream
   $\phi(P_{1:T})$ that the detector consumes, not on raw prices.
-- **Partition restriction.** $T_i$ sees only $\mathcal{T}_{\text{train}}$,
-  inheriting Proposition 5.1.
+- **Partition restriction.** Each $T_i$ sees only $\mathcal{T}_{\text{train}}$,
+  so that calibration does not leak information from validation or test
+  partitions.
 
-Two strategies are implemented: a transparent summary-based map
-$\mathcal{K}_{\text{sum}}$ (§5.7.1), and an EM-based map
-$\mathcal{K}_{\text{EM}}$ used for the sim-to-real experiments (§5.7.2).
+Two strategies satisfy these requirements. The transparent summary-based map
+$\mathcal{K}_{\text{sum}}$ (§5.2) computes $\vartheta$ from a small set of
+closed-form rules, making every parameter traceable to a named empirical
+quantity. The EM-based map $\mathcal{K}_{\text{EM}}$ (§5.4) runs Baum–Welch
+directly on the training partition and is required when the synthetic stream
+must be a maximum-likelihood match to the real data — as in the sim-to-real
+experiments of Chapter 6.
 
-### 5.7.1 Summary-based mapping $\mathcal{K}_{\text{sum}}$
+---
 
-The empirical summary $\mathcal{E}(y^{\text{real,train}})$ collects three
-blocks of statistics, each calibrating one block of generator parameters:
+## 5.2 Summary-based calibration $\mathcal{K}_{\text{sum}}$
+
+### 5.2.1 The empirical summary
+
+$\mathcal{K}_{\text{sum}}$ begins by computing a fixed empirical summary
+$\mathcal{E}(y^{\text{real,train}})$ that collects three blocks of statistics,
+each calibrating one block of generator parameters:
 
 | Block | Symbols | Purpose |
 |---|---|---|
 | Marginal anchors | $\bar y,\, s_y^2,\, q_{0.05}, q_{0.50}, q_{0.95}$ | calibrate $\mu_j,\, \sigma_j^2$ |
-| Dependence proxies | $\hat\rho_1(y),\, \hat\rho_1(\lvert y\rvert),\, \mathrm{sgn}$-rate | validate the existence of regime structure |
+| Dependence proxies | $\hat\rho_1(y),\, \hat\rho_1(\lvert y\rvert),\, \mathrm{sgn\text{-}rate}$ | validate the existence of regime structure |
 | Episode durations | $\hat d_{\text{low}},\, \hat d_{\text{high}}$ | calibrate $P_{ii}$ |
 
 The episode-duration estimator thresholds $\lvert y_k\rvert$ at $q_{0.95}$ and
-returns the mean run lengths on the two sides. This estimator is
-*deliberately coarse*: a finer estimator (e.g. fitting an HMM) would
-entangle the calibration with the very inference procedure under test.
+returns the mean run lengths on each side. This estimator is *deliberately
+coarse*: a finer estimator (e.g. fitting an HMM) would entangle the
+calibration with the very inference procedure under evaluation.
 
-The operator is then composed of three rules.
+### 5.2.2 Mean policy
 
-**Mean policy (default `EmpiricalBaseline`).**
-$\mu_j = \bar y$ for all $j$. Regime separation is carried by variance, which
-matches the dominant pattern in financial returns where conditional means are
-small relative to conditional standard deviations. Alternative policies
-shift the means by $\pm \tfrac{1}{4} s_y$ around either $0$ or $\bar y$ for
-mean-shift sensitivity studies; the $1/4$ factor is small by design to
-prevent the detector from succeeding on obvious mean shifts alone.
+The default policy `EmpiricalBaseline` sets $\mu_j = \bar y$ for all $j$.
+Regime separation is carried entirely by variance, matching the dominant
+pattern in financial returns where conditional means are small relative to
+conditional standard deviations. Alternative policies shift the means by
+$\pm \tfrac{1}{4} s_y$ around either $0$ or $\bar y$ for mean-shift
+sensitivity studies; the $1/4$ factor is deliberately small so the detector
+cannot succeed on obvious mean differences alone.
 
-**Variance policy (default `QuantileAnchored`).** Inverting the standard
-Gaussian quantile $\Phi^{-1}(0.95) \approx 1.6449$:
+A second alternative, `ZeroCentered`, fixes $\mu_j = 0$ for all $j$. It is
+used when the feature is a signed transformation (e.g. log-return) whose
+unconditional mean is approximately zero and whose regime structure is carried
+entirely in the variance.
 
-$$
-\sigma_{\text{low}} = \frac{\lvert q_{0.50} - q_{0.05} \rvert}{1.6449},\qquad
-\sigma_{\text{high}} = \frac{\lvert q_{0.95} - q_{0.50} \rvert}{1.6449},
-$$
+### 5.2.3 Duration-to-persistence map
 
-with variances then sorted ascending so regime $0$ is canonically the calm
-regime. A floor `min_high_low_ratio` is enforced on
-$\sigma_{\text{high}}/\sigma_{\text{low}}$ to avoid degenerate identifiability.
-
-**Duration-to-persistence map.** If $S_k = j$ stays in regime $j$ with
-Bernoulli$(p_{jj})$ self-stay probability, the dwell time is geometric with
-mean $1/(1 - p_{jj})$, hence
+If $S_k = j$ self-transitions with probability $p_{jj}$ (Bernoulli), dwell
+time in regime $j$ is geometrically distributed with mean $1/(1 - p_{jj})$.
+Inverting:
 
 $$
-\boxed{\;p_{jj} = 1 - \frac{1}{d_j}.\;}
+\boxed{\;p_{jj} = 1 - \frac{1}{\hat d_j}.\;}
 $$
 
-Off-diagonal mass $1 - p_{jj}$ is split uniformly across the remaining
-$K-1$ regimes (symmetric off-diagonal — the most uninformative choice given
-only duration targets). Boundary conditions: $d_j > 1$ is required (a
-regime that cannot persist for one step on average is mathematically
-incompatible with Markov structure), and $p_{jj}$ is clamped to
-$[10^{-6},\, 1 - 10^{-6}]$ to keep EM and the forward filter numerically
-interior. The initial distribution defaults to $\pi_j = 1/K$.
+Off-diagonal mass $1 - p_{jj}$ is split uniformly across the remaining $K-1$
+regimes — the most uninformative choice given only duration targets. Boundary
+conditions: $\hat d_j > 1$ is required (a regime that cannot persist for one
+step on average is incompatible with Markov structure), and $p_{jj}$ is
+clamped to $[10^{-6},\, 1 - 10^{-6}]$ to keep EM and the forward filter
+numerically interior. The initial distribution defaults to $\pi_j = 1/K$.
 
-**The complete operator for $K = 2$.** Composing the three rules,
-$\mathcal{K}_{\text{sum}}$ maps
-$(\bar y,\, q_{0.05}, q_{0.50}, q_{0.95},\, \hat d_{\text{low}}, \hat d_{\text{high}})$ to
+### 5.2.4 Complete operator for $K = 2$
+
+Composing the mean policy (§5.2.2), the default variance policy (§5.3.1), and
+the duration map (§5.2.3), $\mathcal{K}_{\text{sum}}$ maps the summary tuple
+$(\bar y,\, q_{0.05}, q_{0.50}, q_{0.95},\, \hat d_{\text{low}}, \hat d_{\text{high}})$
+to
 
 $$
 \begin{aligned}
@@ -365,29 +125,101 @@ P &= \begin{pmatrix} 1 - \tfrac{1}{\hat d_{\text{low}}} & \tfrac{1}{\hat d_{\tex
 $$
 
 Every quantity on the right is an explicit empirical summary; every quantity
-on the left is a generator parameter; the map is deterministic and
+on the left is a generator parameter. The map is deterministic and fully
 auditable.
 
-### 5.7.2 EM-based mapping $\mathcal{K}_{\text{EM}}$ (Quick-EM)
+---
+
+## 5.3 Variance policies
+
+The variance block of $\mathcal{K}_{\text{sum}}$ is the most sensitive to
+feature choice and asset class. Three policies are implemented; all produce
+a set of $K$ variances sorted ascending so regime $0$ is canonically the
+calm regime.
+
+### 5.3.1 `QuantileAnchored` (default)
+
+The low and high regime standard deviations are read off the empirical
+quantile spread by inverting the standard Gaussian CDF at the 5th and 95th
+percentiles:
+
+$$
+\sigma_{\text{low}} = \frac{\lvert q_{0.50} - q_{0.05} \rvert}{\Phi^{-1}(0.95)},\qquad
+\sigma_{\text{high}} = \frac{\lvert q_{0.95} - q_{0.50} \rvert}{\Phi^{-1}(0.95)},
+$$
+
+where $\Phi^{-1}(0.95) \approx 1.6449$. For $K > 2$, regime standard
+deviations are linearly interpolated between $\sigma_{\text{low}}$ and
+$\sigma_{\text{high}}$. The policy is appropriate when the feature
+distribution is approximately symmetric and the quantile spread is a reliable
+proxy for conditional scale.
+
+### 5.3.2 `MagnitudeConditioned` (C′1)
+
+Rather than relying on marginal quantiles, `MagnitudeConditioned` *directly
+partitions the training observations* by their magnitude: observations with
+$\lvert y_k \rvert \le \mathrm{median}(\lvert y\rvert)$ form the low group;
+all others form the high group. The regime variances are the sample variances
+of the two groups:
+
+$$
+\sigma_j^2 = \frac{1}{n_j}\sum_{k \in \mathcal{G}_j} (y_k - \bar y_j)^2,
+\qquad j \in \{\text{low},\, \text{high}\},
+$$
+
+where $\mathcal{G}_{\text{low}} = \{k : \lvert y_k\rvert \le \mathrm{med}\}$
+and $\mathcal{G}_{\text{high}}$ is its complement. This policy is preferred
+for asymmetric or heavy-tailed features (e.g. AbsReturn, SquaredReturn) where
+quantile-based inversion is unreliable. If the training partition is empty,
+the policy falls back to `QuantileAnchored` with a recorded note in
+`mapping_notes`.
+
+For $K > 2$, regime standard deviations are linearly interpolated between
+$\sqrt{\sigma^2_{\text{low}}}$ and $\sqrt{\sigma^2_{\text{high}}}$ using the
+same spacing as `QuantileAnchored`.
+
+### 5.3.3 The ratio guard C′2
+
+After variances are sorted, both `QuantileAnchored` and `MagnitudeConditioned`
+enforce a minimum $\sigma_{\text{high}} / \sigma_{\text{low}}$ ratio to avoid
+degenerate identifiability — a situation where both regimes have nearly
+identical variance and the detector cannot distinguish them. If the raw ratio
+falls below the configured `min_high_low_ratio` $> 1$, the variances are
+rescaled log-symmetrically around their geometric mean until the ratio
+constraint is satisfied:
+
+$$
+\sigma_j \;\leftarrow\; \sigma_j \cdot \alpha^{2\,\text{frac}_j - 1},
+\qquad
+\alpha = \sqrt{\frac{\texttt{min\_high\_low\_ratio}}{\sigma_{\text{high}}/\sigma_{\text{low}}}},
+$$
+
+where $\text{frac}_j \in [0, 1]$ is the regime's position in the sorted
+order. The geometric mean of the variances is preserved by construction,
+so the overall empirical scale is unchanged.
+
+---
+
+## 5.4 Quick-EM calibration $\mathcal{K}_{\text{EM}}$
 
 $\mathcal{K}_{\text{sum}}$ is interpretable but heuristic: there is no
 guarantee that $\vartheta = \mathcal{K}_{\text{sum}}(\mathcal{E})$ is a
 maximum-likelihood description of the training partition. For **sim-to-real**
 experiments — where a detector is *trained* on synthetic data and *tested*
-on real data — a stronger calibration is needed: the synthetic stream must
-be a sample from the same generative law that EM would extract from the real
+on real data — a stronger calibration is needed: the synthetic stream must be
+a sample from the same generative law that EM would extract from the real
 training data, otherwise the train and test distributions diverge before the
-detector sees them.
+detector has processed a single observation.
 
 The Quick-EM strategy realises this by running Baum–Welch directly on
 $y^{\text{real,train}}_{1:T}$:
 
-**Algorithm 5.3 ($\mathcal{K}_{\text{EM}}$).**
+**Algorithm 5.1 ($\mathcal{K}_{\text{EM}}$).**
 
-1. Initialise $\vartheta_0$ via the quantile heuristic of §5.7.1 (used only
-   as an EM starting point).
-2. Run `fit_em(observations, $\vartheta_0$, max_iter, tol)` to convergence
-   or to `max_iter` iterations.
+1. Compute $\vartheta_0$ via $\mathcal{K}_{\text{sum}}$ (used only as an EM
+   warm start, not as the final output).
+2. Run `fit_em`$(y^{\text{real,train}},\; \vartheta_0,\; \texttt{max\_iter},\; \texttt{tol})$
+   to convergence or iteration limit.
 3. Return $\hat\vartheta_{\text{EM}}$ as the generator parameters.
 
 Symbolically,
@@ -398,22 +230,72 @@ $$
 \hat\vartheta_{\text{EM}} = (\hat\pi,\, \hat P,\, \hat\mu,\, \hat\sigma^2).
 $$
 
-The synthetic stream $y^{\text{syn}}\!\!\sim\! \mathrm{MSM}(\hat\vartheta_{\text{EM}})$ then
-samples exactly from the law that EM would have used to score the real
-training data — the natural train-time analogue of the test-time
-likelihood.
+The synthetic stream $y^{\text{syn}} \sim \mathrm{MSM}(\hat\vartheta_{\text{EM}})$
+then samples from the law that EM would have used to score the real training
+data — the natural train-time analogue of the test-time likelihood.
+
+In the SPY daily verification run, $\hat\vartheta_{\text{EM}}$ was obtained
+in $31$ Baum–Welch iterations to $\log\mathcal{L} = 4581.29$, with fitted
+expected durations $\hat d = (46.76,\, 24.23)$.
 
 ---
 
-## 5.8 Verification and the sim-to-real bridge
+## 5.5 Initial distribution policy
 
-### 5.8.1 Calibration verification
+### 5.5.1 The degenerate-$\pi$ pathology
+
+The Quick-EM operator $\mathcal{K}_{\text{EM}}$ returns four estimators
+$(\hat\pi, \hat P, \hat\mu, \hat\Sigma)$. The initial distribution $\hat\pi$
+is the *maximum-likelihood* assignment of probability mass to the starting
+regime of the *training partition*, which can collapse to a near-degenerate
+point mass on series whose lag-1 autocorrelation lies outside the expressive
+range of the model class. A concrete instance: z-scored SPY daily log-returns
+have $\hat\rho_1(y) \approx -0.15$, which a Gaussian MSM with $\mu_0 = \mu_1$
+cannot reproduce. EM responds by placing $\hat\pi \approx (1,\, 9.4
+\cdot 10^{-12})$ — "the series started in the volatile regime and immediately
+mean-reverted." For *detection*, $\pi$ is then used twice:
+
+1. as the initial state distribution of the synthetic data *generator*, and
+2. as the filter prior at time $t = 1$ of the real test stream.
+
+A near-degenerate $\hat\pi$ forces the filter to start with near-certainty in
+one regime and never cross the detector threshold, producing zero alarms over
+the entire test horizon.
+
+### 5.5.2 `PiPolicy::Stationary` versus `PiPolicy::Fitted`
+
+The principled resolution is to replace $\hat\pi$ with the stationary
+distribution $\pi^\star$ of the fitted chain, defined by the fixed-point
+equation $\pi^\star = \pi^\star \hat P$ (computed by power iteration to
+$10^{-10}$ tolerance). The pipeline supports this via a
+`PiPolicy::{Stationary, Fitted}` knob; the default is `Stationary`.
+
+For the SPY daily example, this replaces $\hat\pi = (1,\, 9.4 \cdot 10^{-12})$
+with $\pi^\star \approx (0.286,\, 0.714)$, which is the long-run frequency the
+chain visits each regime. The filter initialised with $\pi^\star$ is then
+agnostic about which regime the series is in at $t = 1$ — the correct
+epistemic state when no prior information is available.
+
+`PiPolicy::Stationary` is necessary but not sufficient: it cannot rescue a
+structurally misspecified feature choice. On SPY daily *log-returns*, even
+with $\pi^\star$ the detector fires zero alarms because the feature
+autocorrelation is outside the model class. On SPY daily *absolute returns*,
+whose $\hat\rho_1 \approx 0.37$ is inside the model class,
+`PiPolicy::Stationary` recovers a working sim-to-real detector. The
+combination of feature selection and $\pi$-policy is therefore the correct
+unit of analysis, not either factor in isolation.
+
+---
+
+## 5.6 Calibration verification
+
+### 5.6.1 Field-wise tolerance bounds
 
 A calibrated $\vartheta$ is useful only if the synthetic data it produces
-actually resembles the empirical target on the same summary functionals.
-The verifier $\mathcal{V}(\vartheta;\, \mathcal{E})$ samples
+actually resembles the empirical target on the summary functionals used to
+construct it. The verifier $\mathcal{V}(\vartheta;\, \mathcal{E})$ samples
 $y^{\text{syn}}_{1:T} \sim \mathrm{MSM}(\vartheta)$, recomputes
-$\mathcal{E}^{\text{syn}}$, and returns the per-field difference
+$\mathcal{E}^{\text{syn}}$, and returns the per-field residual
 
 $$
 \Delta_i = T_i(y^{\text{syn}}) - T_i(y^{\text{real}})
@@ -421,207 +303,101 @@ $$
 
 together with a per-field tolerance check $\lvert \Delta_i \rvert \le \tau_i$
 (or, for variance, $\lvert \Delta_i \rvert / T_i(y^{\text{real}}) \le \tau_i$).
-The defaults are deliberately loose ($\tau_{\text{mean}} = 0.25$,
-$\tau_{\text{var}} = 0.50$ relative, $\tau_{q} = 0.30$,
-$\tau_{|\rho_1|} = 0.20$, $\tau_{\text{sgn}} = 0.20$): the goal is anchoring,
-not cloning.
+Default tolerances are deliberately loose:
 
-**Masking.** A target mask selects which fields participate in the global
-pass/fail verdict while preserving per-field records. The mask is derived
-from the active policy:
+| Field | Default $\tau_i$ |
+|---|---|
+| Mean | $0.25$ (absolute) |
+| Variance | $0.50$ (relative) |
+| Quantiles $q_{0.05}, q_{0.50}, q_{0.95}$ | $0.30$ (absolute) |
+| $\lvert\hat\rho_1\rvert$ | $0.20$ (absolute) |
+| Sign-change rate | $0.20$ (absolute) |
+
+The goal is *anchoring*, not cloning. Tight tolerances would require a more
+expressive generator class, defeating the interpretability objective.
+
+### 5.6.2 Masking
+
+A target mask selects which fields participate in the global pass/fail verdict
+while preserving per-field records. The mask is derived from the active policy:
 
 - `MeanPolicy::ZeroCentered` disables the mean check (the synthetic mean is
-  fixed at zero by construction).
-- `CalibrationStrategy::QuickEm` disables the dependence summaries
+  fixed at zero by construction; a deviation is expected and harmless).
+- `CalibrationStrategy::QuickEm` disables the dependence proxies
   $\hat\rho_1(\lvert y\rvert)$ and the sign-change rate (which emerge as
-  side-effects of EM rather than as calibration targets).
+  side-effects of EM rather than as explicit calibration targets).
 
-Masked fields are recorded as `checked: false` so that downstream consumers
-can distinguish a *skipped* check from a *passed* one.
+Masked fields are recorded as `checked: false` in the verification output,
+distinguishing a *skipped* check from a *passed* one for downstream consumers.
 
-### 5.8.2 The sim-to-real bridge
+### 5.6.3 Scale-consistency check
 
-The `SimToReal` experiment mode composes the synthetic pipeline (§5.6) and
-the empirical pipeline (§5.2–§5.5) into a single workflow whose stages map
-onto the canonical runner from Chapter 7:
-
-| Stage | Effect under SimToReal |
-|---|---|
-| `resolve_data` | Load $y^{\text{real}}$; run $\mathcal{K}_{\text{EM}}$ on the train partition; sample $y^{\text{syn}}$ of length `horizon`; record the scale-consistency check below |
-| `build_features` | Fit a scaler $\mathcal{S}$ on $y^{\text{real,train}}$ log-returns; apply it to both streams |
-| `train_or_load_model` | Fit EM **only** on $\mathcal{S}(y^{\text{syn}})$ → $\theta^{\text{frozen}}$ |
-| `run_online` | Score the synthetic-trained $\theta^{\text{frozen}}$ over the *real* validation+test stream |
-| `evaluate_real` | Route A (proxy events) and Route B (segmentation coherence) on the real test partition |
-
-**Scale-consistency policy.** Because the detector trained on synthetic
-features is evaluated on real features, the two streams must share a common
-numeric scale. The pipeline enforces a one-sided z-scoring policy: a single
-scaler $\mathcal{S}$ is fitted on the real training partition and then
-*applied* (not refitted) to the synthetic stream. After scaling,
+In the sim-to-real pipeline, the synthetic stream is *trained on* and the real
+stream is *tested on* using a single scaler $\mathcal{S}$ fitted on the real
+training partition. For the trained model to transfer, both streams must share
+a common numeric scale after applying $\mathcal{S}$. The pipeline enforces:
 
 $$
-\text{rel\_error} \;=\; \frac{\lvert \hat\sigma(y^{\text{syn,scaled}}) - \hat\sigma(y^{\text{real,scaled}}) \rvert}{\hat\sigma(y^{\text{real,scaled}})}
-\;\le\; 0.10
+\text{rel\_error} = \frac{\lvert \hat\sigma(y^{\text{syn,scaled}}) - \hat\sigma(y^{\text{real,scaled}}) \rvert}
+{\hat\sigma(y^{\text{real,scaled}})} \;\le\; 0.10,
 $$
 
-is required and recorded in `synthetic_training_provenance.json`. The
-verification run on SPY daily produced
+recorded in `synthetic_training_provenance.json`. The verification run on
+SPY daily produced
 
 $$
-\hat\sigma_{\text{real}} = 0.01302,\quad \hat\sigma_{\text{syn}} = 0.01234,\quad \text{rel\_error} = 0.0524,
+\hat\sigma_{\text{real}} = 0.01302,\quad
+\hat\sigma_{\text{syn}} = 0.01234,\quad
+\text{rel\_error} = 0.0524,
 $$
 
-passing the 10 % bound, with $\hat\vartheta_{\text{EM}}$ obtained in
-$31$ Baum–Welch iterations to $\log\mathcal{L} = 4581.29$ and
-$\hat d = (46.76,\, 24.23)$.
+passing the 10 % bound.
 
-### 5.8.3 The role of the calibration verdict
+### 5.6.4 The calibration verdict
 
 When $\mathcal{V}$ reports `within_tolerance: false` — as it does for SPY
 daily under $\mathcal{K}_{\text{sum}}$ because the empirical
 $\hat\rho_1(y) \approx -0.15$ cannot be reproduced by any $K = 2$ Gaussian
 MSM with $\mu_0 = \mu_1$ — the response is *not* to abort. The chosen
-scenario family is a deliberately simpler analogue, not a faithful clone.
+scenario is a deliberately simpler analogue of reality, not a faithful clone.
 The synthetic ground truth remains valid for detector benchmarking; what is
-recorded is the *limitation*: detector performance on this synthetic stream
-does not predict performance on the real stream's full serial structure
-one-for-one. This is the methodological cost of using an interpretable
-generator, and the calibration verdict makes it auditable.
+recorded is a precise *limitation*: the specific fields that failed tolerance
+and the direction of the residuals. The methodological cost of using an
+interpretable generator is therefore auditable rather than hidden.
 
-A concrete instance worked through in §5.8.5 below illustrates this
-auditability. *LogReturn on SPY daily has negative lag-1 autocorrelation,
-which is structurally outside the expressive range of a Gaussian MSM with
-$\mu_0 = \mu_1$; the sim-to-real bridge correctly surfaces this as a
-degenerate-$\pi$ fit and zero detector alarms, and the cure is to choose a
-feature whose autocorrelation lies inside the model class — AbsReturn at
-$\hat\rho_1 \approx 0.37$ is one such choice.*
-
-### 5.8.4 The $\pi$-policy for the synthetic generator
-
-The Quick-EM operator $\mathcal{K}_{\text{EM}}$ returns four estimators
-$(\hat\pi, \hat P, \hat\mu, \hat\Sigma)$. The initial distribution
-$\hat\pi$ is the *maximum-likelihood* assignment of probability mass to the
-starting regime of the *training partition*, and on series whose lag-1
-autocorrelation is outside the model's expressive range it can collapse to
-a near-degenerate point mass (e.g. $\hat\pi \approx (1, 0)$ on z-scored SPY
-daily log-returns — EM expresses the negative $\hat\rho_1(y)$ as "started
-in a tantrum, mean-reverted into calm"). For sim-to-real *detection*, $\pi$
-is then used twice: once as the initial state of the synthetic data
-generator, and once as the *filter prior* at the start of the real test
-stream — where there is no prior information about the regime.
-
-The principled choice is therefore to replace $\hat\pi$ with the stationary
-distribution $\pi^\star$ of the fitted chain, satisfying $\pi^\star =
-\pi^\star \hat P$, before the synthetic stream is emitted and before the
-filter is initialised. The thesis pipeline supports this via a
-`PiPolicy::{Fitted, Stationary}` knob on $\mathcal{K}_{\text{EM}}$; the
-default is `Stationary`. For the SPY daily example above, this replaces
-$\hat\pi = (1,\, 9.4 \cdot 10^{-12})$ with $\pi^\star \approx
-(0.286,\, 0.714)$.
-
-The policy is necessary but not sufficient: as the §5.8.5 sweep shows,
-stationary-$\pi$ alone does not rescue a structurally misspecified feature
-choice, but in combination with a feature inside the model class it
-recovers a working sim-to-real detector.
-
-### 5.8.5 Sim-to-real generalisation sweep
-
-Across three real assets with proxy event labels (SPY, WTI, GOLD daily),
-sim-trained and real-trained detectors are compared on Route A
-(`event_coverage`, `alarm_relevance`) and Route B
-(`segmentation_coherence`). The configuration is the §18-grid joint
-optimum (AbsReturn / $K = 3$ / HardSwitch $(0.55,\, 2,\, 5)$) with
-`PiPolicy::Stationary`. The full table is reproduced in
-`verification/sim_to_real_recovery_2026_05_15/sweep_summary.md`; the
-headline numbers are:
-
-| asset / feature | sim event_cov | real event_cov | sim coherence | real coherence |
-|---|---|---|---|---|
-| SPY LogReturn $K{=}2$ (counterexample) | 0.000 | 0.077 | 0.138 | 0.139 |
-| SPY AbsReturn $K{=}3$  | 0.077 | 0.692 | 0.301 | 0.459 |
-| WTI AbsReturn $K{=}3$  | 0.077 | 0.923 | **0.454** | 0.308 |
-| GOLD AbsReturn $K{=}3$ | **0.875** | 1.000 | 0.334 | 0.360 |
-
-GOLD daily is the existence proof: a detector trained entirely on
-synthetic data generated from $\hat\vartheta_{\text{EM}}$ recovers eight of
-the nine real proxy events, with `alarm_relevance` and
-`segmentation_coherence` within 14 % and 7 % of the real-trained baseline
-respectively. WTI exhibits the diagnostic pattern "sim-trained model is
-*more* internally consistent than the real-trained model (higher Route-B
-coherence) but rarely fires", isolating the remaining gap to
-detector-threshold calibration rather than model quality. SPY LogReturn
-preserves the counterexample.
+Concretely, a `within_tolerance: false` verdict on the autocorrelation field
+is the signal to re-examine the feature choice. A feature for which
+$\mathcal{V}$ passes all active tolerance checks — such as AbsReturn on
+GOLD daily — is one for which the sim-to-real transfer argument can be made
+without caveat.
 
 ---
 
-## 5.9 The observation streams used in this thesis
+## 5.7 Theory–code correspondence
 
-### 5.9.1 End-to-end transformation flow
+The table below maps each section of this chapter to the Rust source files
+and the specific types or functions that implement the described concept.
+All paths are relative to the workspace root.
 
-$$
-\begin{array}{c}
-\text{Vendor response (newest-first)} \\
-\big\downarrow\ \text{clean: sort, dedup, gap-check (Alg.\ 5.1)} \\
-\text{CleanSeries (ascending, gap-reported)} \\
-\big\downarrow\ \text{RTH filter if } \text{session\_aware}=\text{true} \\
-\text{CleanSeries (RTH only)} \\
-\big\downarrow\ \text{chronological partition (§5.3)} \\
-\mathcal{T}_{\text{train}} \sqcup \mathcal{T}_{\text{val}} \sqcup \mathcal{T}_{\text{test}} \\
-\big\downarrow\ \text{feature operator } \phi \text{ (§5.4) and scaler } \mathcal{S}_{|train} \text{ (§5.5)} \\
-y^{\text{real}}_{1:T} \\[6pt]
-\hline\\[-6pt]
-\text{Under \texttt{SimToReal}: } \mathcal{K}_{\text{EM}}(y^{\text{real,train}}) = \hat\vartheta \\
-\big\downarrow\ \text{Alg.\ 5.2 with seed } \omega \\
-(y^{\text{syn}}_{1:T},\, S_{1:T}) \\
-\big\downarrow\ \mathcal{S}_{|real\text{-train}} \text{ applied to } y^{\text{syn}} \\
-y^{\text{syn,scaled}}_{1:T}\ \text{(train)}\quad y^{\text{real,scaled}}_{1:T}\ \text{(test)}
-\end{array}
-$$
-
-The lower block is exercised only in `SimToReal` mode; in pure-real mode the
-detector is both trained and tested on $y^{\text{real}}$, and in
-pure-synthetic mode there is no real stream at all.
-
-### 5.9.2 Provenance artifacts
-
-Every run writes a small set of JSON audit files that make the chain
-reproducible:
-
-| Artifact | Source | Contents |
-|---|---|---|
-| `data_quality.json` | §5.2.2 | $n_{\text{input}}, n_{\text{output}}, n_{\text{dropped\_duplicates}}, \text{had\_unsorted\_input}, \text{gaps}$ |
-| `split_summary.json` | §5.3 | $n_{\text{train}}, n_{\text{val}}, n_{\text{test}}, \tau_1, \tau_2$, partition timestamps |
-| `feature_summary.json` | §5.4–§5.5 | feature label, $n_{\text{raw}}, n_{\text{feature}}, \text{warmup\_trimmed}, \text{train\_n}$, scaler stats |
-| `synthetic_training_provenance.json` | §5.7.2 + §5.8.2 | strategy, $\hat\vartheta_{\text{EM}}$, $\hat d$, `scale_check {empirical\_std, synthetic\_std, rel\_error, within\_tolerance}`, seed |
-| `sim_to_real_summary.json` | §5.8.2 | `train_source`, `test_source`, $\hat\vartheta$, Route A & Route B metrics |
-
-For the verification batch used throughout the empirical chapters
-(`verify_2026_05_15`), the SPY-daily numbers cited above
-($n_{\text{train}} = 1463$, $\tau_1 =$ 2023-10-25,
-$\hat\sigma(\text{scaled stream}) = 0.934$, rel\_error $= 0.0524$) are
-quoted from these artifacts directly.
-
-### 5.9.3 What the model now sees
-
-By the time $y_{1:T}$ enters EM and the online detector:
-
-1. **(C1)** the sequence is strictly chronological;
-2. **(C2)** every $y_k$ is a measurable function of $P_{1:k}$ (operators of
-   §5.4 are causal by signature);
-3. **(C3)** the scaler is fitted only on the training prefix (§5.5), and
-   so is $\mathcal{K}$ (§5.7); validation and test never feed back;
-4. **(C4)** $y_k$ is a stationarity-friendly transformation of prices,
-   never the price itself;
-5. **(C5)** in synthetic mode the regime-conditional Gaussian assumption
-   holds by construction; in real and sim-to-real modes the calibration
-   verifier of §5.8 quantifies how far it is violated and records the
-   verdict.
-
-Conditions C1–C4 are *enforced* by the pipeline; condition C5 is *audited*.
-Every guarantee in this list is the responsibility of a separate module of
-the codebase, and the union of those modules is exercised by 328 passing
-tests in the verification batch.
-
-The observation sequence on which all subsequent results in this thesis are
-computed is exactly this $y_{1:T}$, together with the synthetic ground
-truth $\mathcal{C}(S_{1:T})$ where applicable.
+| Section | Concept | File | Key types / functions |
+|---|---|---|---|
+| §5.1 | Calibration operator $\mathcal{K}$ (top-level entry point) | `src/calibration/mapping.rs` | `calibrate_to_synthetic()`, `CalibrationMappingConfig`, `CalibrationStrategy` |
+| §5.1 | End-to-end calibration workflow (simulate → verify) | `src/calibration/report.rs` | `run_calibration_workflow()`, `CalibrationReport`, `CalibrationReportView` |
+| §5.1 | Module root / re-exports | `src/calibration/mod.rs` | — |
+| §5.2.1 | Empirical summary functionals $T_1 \ldots T_m$ | `src/calibration/summary.rs` | `EmpiricalSummary` (mean, variance, quantiles, acf1, abs\_acf1, sign\_change\_rate, episode durations), `summarize_observation_values()` |
+| §5.2.1 | Calibration profile bundle (summary + observations + tag) | `src/calibration/summary.rs` | `EmpiricalCalibrationProfile`, `CalibrationDatasetTag`, `CalibrationPartition`, `SummaryTargetSet` |
+| §5.2.2 | Mean policy ($\bar y$, zero-centred, shifted) | `src/calibration/mapping.rs` | `MeanPolicy::{EmpiricalBaseline, ZeroCentered, ShiftedAroundMean, ShiftedAroundZero}` |
+| §5.2.3 | Duration-to-persistence map $p_{jj} = 1 - 1/\hat d_j$ | `src/calibration/mapping.rs` | `calibrate_via_summary()` (transition-matrix block) |
+| §5.2.4 | Complete $K = 2$ summary operator | `src/calibration/mapping.rs` | `calibrate_via_summary()` (full body), `CalibratedSyntheticParams` |
+| §5.3.1 | `QuantileAnchored` variance policy | `src/calibration/mapping.rs` | `VariancePolicy::QuantileAnchored` |
+| §5.3.2 | `MagnitudeConditioned` variance policy (C′1) | `src/calibration/mapping.rs` | `VariancePolicy::MagnitudeConditioned` |
+| §5.3.3 | Ratio guard (C′2) — log-symmetric rescaling | `src/calibration/mapping.rs` | ratio-guard block inside `calibrate_via_summary()` |
+| §5.4 | Quick-EM strategy $\mathcal{K}_{\text{EM}}$ (Baum–Welch on real train) | `src/calibration/mapping.rs` | `CalibrationStrategy::QuickEm { max_iter, tol }`, `calibrate_to_synthetic()` QuickEm branch |
+| §5.4 | Sim-to-real experiment backend (full pipeline) | `src/experiments/sim_to_real_backend.rs` | `SimToRealBackend` |
+| §5.5.1 | Degenerate-$\pi$ pathology | `src/calibration/mapping.rs` | `PiPolicy`, documented in `CalibrationMappingConfig::pi_policy` |
+| §5.5.2 | `PiPolicy::Stationary` / `Fitted` | `src/calibration/mapping.rs` | `PiPolicy::{Stationary, Fitted}`, power-iteration block in `calibrate_to_synthetic()` |
+| §5.6.1 | Field-wise tolerance bounds | `src/calibration/verify.rs` | `VerificationTolerance`, `FieldVerification`, `FieldResults` |
+| §5.6.2 | Verification target mask | `src/calibration/verify.rs` | `VerificationTargetMask`, `VerificationTargetMask::for_policy()` |
+| §5.6.3 | Scale-consistency check (rel\_error ≤ 10 %) | `src/calibration/verify.rs` | `ScaleConsistencyCheck`, `scale_consistency_check()`, `DEFAULT_SCALE_TOLERANCE` |
+| §5.6.4 | Calibration verdict (`within_tolerance`) | `src/calibration/verify.rs` | `CalibrationVerification`, `verify_calibration_masked()` |
+| §5.6 | Serialised verification output | `src/calibration/report.rs` | `CalibrationReportView` fields: `verification_passed`, `mapping_notes`, `field_results`, `verification_mask` |
